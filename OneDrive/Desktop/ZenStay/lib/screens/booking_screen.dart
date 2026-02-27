@@ -52,15 +52,181 @@ class _BookingScreenState extends State<BookingScreen> {
   Set<int> selectedAddonIndexes = {};
   double lastAddonsTotal = 0.0;
 
+  // Booking availability: per-date hours already booked (verified)
+  final Map<DateTime, int> _dailyBookedHours = {};
+  static const int _maxDailyHours = 24;
+  bool _availabilityLoaded = false;
+
   @override
   void initState() {
     super.initState();
+    _loadExistingBookings();
   }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     primaryColor = Theme.of(context).primaryColor;
+  }
+
+  DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
+
+  int _hoursFromDurationLabel(String? label) {
+    if (label == null) return 0;
+    final lower = label.toLowerCase();
+    if (lower.contains('overnight')) return 22;
+    // Fallback: pull first number
+    final match = RegExp(r'(\d+)').firstMatch(lower);
+    if (match != null) {
+      final v = int.tryParse(match.group(1) ?? '');
+      if (v != null) {
+        // Treat anything >= 22 as an overnight block
+        return v >= 22 ? 22 : v;
+      }
+    }
+    return 0;
+  }
+
+  Future<void> _loadExistingBookings() async {
+    try {
+      final snap = await FirebaseFirestore.instance
+          .collection('bookings')
+          .where('propertySlug', isEqualTo: widget.slug)
+          .where('paymentStatus', isEqualTo: 'verified')
+          .get();
+      final Map<DateTime, int> temp = {};
+      for (final doc in snap.docs) {
+        final data = doc.data();
+        final durRaw = data['selectedDuration'] ?? data['duration'];
+        final String duration =
+            durRaw == null ? '' : durRaw.toString().toLowerCase();
+        final int durHours = _hoursFromDurationLabel(duration);
+
+        List<DateTime> days = [];
+        final rawStay = data['stayDates'];
+        if (rawStay is List && rawStay.isNotEmpty) {
+          for (final v in rawStay) {
+            if (v is Timestamp) {
+              days.add(_dateOnly(v.toDate()));
+            }
+          }
+        } else {
+          DateTime? _asDate(dynamic v) {
+            if (v == null) return null;
+            if (v is Timestamp) return v.toDate();
+            if (v is DateTime) return v;
+            if (v is String) return DateTime.tryParse(v);
+            return null;
+          }
+
+          final checkIn = _asDate(
+              data['checkInDate'] ?? data['checkIn'] ?? data['startDate']);
+          final checkOut = _asDate(
+              data['checkOutDate'] ?? data['checkOut'] ?? data['endDate']);
+          if (checkIn != null && checkOut != null) {
+            var cursor = _dateOnly(checkIn);
+            final end = _dateOnly(checkOut);
+            while (cursor.isBefore(end)) {
+              days.add(cursor);
+              cursor = cursor.add(const Duration(days: 1));
+            }
+          }
+        }
+
+        for (final day in days) {
+          if (durHours <= 0) continue;
+          temp[day] = (temp[day] ?? 0) + durHours;
+        }
+      }
+      if (mounted) {
+        setState(() {
+          _dailyBookedHours
+            ..clear()
+            ..addAll(temp);
+          _availabilityLoaded = true;
+        });
+      }
+    } catch (_) {
+      // If this fails, we just skip availability hints
+    }
+  }
+
+  bool _isDateFullyBooked(DateTime date) {
+    final key = _dateOnly(date);
+    final hours = _dailyBookedHours[key] ?? 0;
+    return hours >= _maxDailyHours;
+  }
+
+  Future<bool> _confirmSlotStillAvailable() async {
+    try {
+      final snap = await FirebaseFirestore.instance
+          .collection('bookings')
+          .where('propertySlug', isEqualTo: widget.slug)
+          .where('paymentStatus', isEqualTo: 'verified')
+          .get();
+
+      final Map<DateTime, int> occupiedHours = {};
+      for (final doc in snap.docs) {
+        final data = doc.data();
+        List<DateTime> days = [];
+        final rawStay = data['stayDates'];
+        if (rawStay is List && rawStay.isNotEmpty) {
+          for (final v in rawStay) {
+            if (v is Timestamp) {
+              days.add(_dateOnly(v.toDate()));
+            }
+          }
+        } else {
+          DateTime? _asDate(dynamic v) {
+            if (v == null) return null;
+            if (v is Timestamp) return v.toDate();
+            if (v is DateTime) return v;
+            if (v is String) return DateTime.tryParse(v);
+            return null;
+          }
+
+          final checkIn = _asDate(
+              data['checkInDate'] ?? data['checkIn'] ?? data['startDate']);
+          final checkOut = _asDate(
+              data['checkOutDate'] ?? data['checkOut'] ?? data['endDate']);
+          if (checkIn != null && checkOut != null) {
+            var cursor = _dateOnly(checkIn);
+            final end = _dateOnly(checkOut);
+            while (cursor.isBefore(end)) {
+              days.add(cursor);
+              cursor = cursor.add(const Duration(days: 1));
+            }
+          }
+        }
+        final int durHours =
+            _hoursFromDurationLabel(data['selectedDuration']?.toString());
+        for (final d in days) {
+          if (durHours <= 0) continue;
+          occupiedHours[d] = (occupiedHours[d] ?? 0) + durHours;
+        }
+      }
+
+      final List<DateTime> selectedDays = _selectedRangeDates.isNotEmpty
+          ? _selectedRangeDates
+          : (_selectedDay != null
+              ? [_selectedDay!]
+              : [_focusedDay]);
+
+      final int newHoursPerDay =
+          _hoursFromDurationLabel(selectedDuration ?? '8h');
+
+      for (final d in selectedDays) {
+        final key = _dateOnly(d);
+        final existing = occupiedHours[key] ?? 0;
+        if (newHoursPerDay <= 0) continue;
+        if (existing + newHoursPerDay > _maxDailyHours) return false;
+      }
+      return true;
+    } catch (_) {
+      // In case of error, do not block booking, but refresh map
+      await _loadExistingBookings();
+      return true;
+    }
   }
 
   double _toDouble(dynamic v) {
@@ -230,9 +396,24 @@ class _BookingScreenState extends State<BookingScreen> {
     if (holidayDates.contains(dateString) && holidayDefaults.isNotEmpty) {
       return Map<String, double>.from(holidayDefaults);
     }
-    return _isWeekend(date)
+    final Map<String, double> base = _isWeekend(date)
         ? Map<String, double>.from(weekendRates)
         : Map<String, double>.from(weekdayRates);
+
+    // Filter out durations that don't fit remaining daily hours
+    if (_availabilityLoaded) {
+      final usedHours = _dailyBookedHours[_dateOnly(date)] ?? 0;
+      final remaining = _maxDailyHours - usedHours;
+      if (remaining <= 0) {
+        return <String, double>{};
+      }
+      base.removeWhere((label, _) {
+        final h = _hoursFromDurationLabel(label);
+        return h <= 0 || h > remaining;
+      });
+    }
+
+    return base;
   }
 
   void _recalculate() {
@@ -585,7 +766,25 @@ class _BookingScreenState extends State<BookingScreen> {
             ),
             onPressed: baseTotal <= 0
                 ? null
-                : () {
+                : () async {
+                    final isAvailable =
+                        await _confirmSlotStillAvailable();
+                    if (!isAvailable) {
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            'Sorry, this slot was just taken!',
+                            style: GoogleFonts.poppins(
+                                color: Colors.white),
+                          ),
+                          backgroundColor: Colors.red.shade600,
+                        ),
+                      );
+                      await _loadExistingBookings();
+                      return;
+                    }
+
                     final stayDates = _selectedRangeDates.isNotEmpty
                         ? _selectedRangeDates
                         : (_selectedDay != null
@@ -829,6 +1028,19 @@ class _BookingScreenState extends State<BookingScreen> {
                                   isSameDay(_selectedDay, day),
                               onDaySelected: (selectedDay, focusedDay) {
                                 if (!isSameDay(_selectedDay, selectedDay)) {
+                                  if (_availabilityLoaded &&
+                                      _isDateFullyBooked(selectedDay)) {
+                                    ScaffoldMessenger.of(context)
+                                        .showSnackBar(SnackBar(
+                                      content: Text(
+                                        'This date is fully booked. Please choose another date.',
+                                        style: GoogleFonts.poppins(
+                                            color: Colors.white),
+                                      ),
+                                      backgroundColor: Colors.red.shade600,
+                                    ));
+                                    return;
+                                  }
                                   final active =
                                       _getApplicableRateMap(selectedDay);
                                   final durations =
@@ -860,16 +1072,24 @@ class _BookingScreenState extends State<BookingScreen> {
                                     final diff =
                                         end.difference(start).inDays;
                                     for (int i = 0; i < diff; i++) {
-                                      _selectedRangeDates
-                                          .add(start.add(Duration(days: i)));
+                                      final d = start.add(Duration(days: i));
+                                      if (_availabilityLoaded &&
+                                          _isDateFullyBooked(d)) {
+                                        continue;
+                                      }
+                                      _selectedRangeDates.add(d);
                                     }
                                   }
                                 });
                                 _recalculate();
                               },
-                              enabledDayPredicate: (d) => !d.isBefore(
-                                  DateTime.now()
-                                      .subtract(const Duration(days: 1))),
+                              enabledDayPredicate: (d) {
+                                final isPast = d.isBefore(DateTime.now()
+                                    .subtract(const Duration(days: 1)));
+                                if (isPast) return false;
+                                if (!_availabilityLoaded) return true;
+                                return !_isDateFullyBooked(d);
+                              },
                             ),
                             const SizedBox(height: 24),
                           ],
@@ -912,6 +1132,19 @@ class _BookingScreenState extends State<BookingScreen> {
                             isSameDay(_selectedDay, day),
                         onDaySelected: (selectedDay, focusedDay) {
                           if (!isSameDay(_selectedDay, selectedDay)) {
+                            if (_availabilityLoaded &&
+                                _isDateFullyBooked(selectedDay)) {
+                              ScaffoldMessenger.of(context)
+                                  .showSnackBar(SnackBar(
+                                content: Text(
+                                  'This date is fully booked. Please choose another date.',
+                                  style: GoogleFonts.poppins(
+                                      color: Colors.white),
+                                ),
+                                backgroundColor: Colors.red.shade600,
+                              ));
+                              return;
+                            }
                             final active =
                                 _getApplicableRateMap(selectedDay);
                             final durations = active.keys.toList()..sort();
@@ -941,15 +1174,24 @@ class _BookingScreenState extends State<BookingScreen> {
                             if (start != null && end != null) {
                               final diff = end.difference(start).inDays;
                               for (int i = 0; i < diff; i++) {
-                                _selectedRangeDates
-                                    .add(start.add(Duration(days: i)));
+                                final d = start.add(Duration(days: i));
+                                if (_availabilityLoaded &&
+                                    _isDateFullyBooked(d)) {
+                                  continue;
+                                }
+                                _selectedRangeDates.add(d);
                               }
                             }
                           });
                           _recalculate();
                         },
-                        enabledDayPredicate: (d) => !d.isBefore(
-                            DateTime.now().subtract(const Duration(days: 1))),
+                        enabledDayPredicate: (d) {
+                          final isPast = d.isBefore(DateTime.now()
+                              .subtract(const Duration(days: 1)));
+                          if (isPast) return false;
+                          if (!_availabilityLoaded) return true;
+                          return !_isDateFullyBooked(d);
+                        },
                       ),
                       const SizedBox(height: 24),
                       Card(

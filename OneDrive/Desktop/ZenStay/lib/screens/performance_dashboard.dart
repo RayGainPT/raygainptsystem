@@ -347,44 +347,47 @@ class _PerformanceDashboardState extends State<PerformanceDashboard> {
                                     totalExpenses),
                               ],
                             )
-                          : Row(
+                          : Column(
                               crossAxisAlignment:
                                   CrossAxisAlignment.start,
                               children: [
-                                Expanded(
-                                    flex: 3,
-                                    child: _buildRevenueCard(
-                                        lastSixMonths,
-                                        monthlyExpenses,
-                                        primary,
-                                        blue)),
-                                const SizedBox(width: 16),
-                                Expanded(
-                                  flex: 2,
-                                  child: Column(
-                                    children: [
-                                      _buildStatusCard(
+                                Row(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.start,
+                                  children: [
+                                    Expanded(
+                                      flex: 3,
+                                      child: _buildRevenueCard(
+                                          lastSixMonths,
+                                          monthlyExpenses,
+                                          primary,
+                                          blue),
+                                    ),
+                                    const SizedBox(width: 16),
+                                    Expanded(
+                                      flex: 2,
+                                      child: _buildStatusCard(
                                           statusCounts),
-                                      const SizedBox(height: 16),
-                                      Row(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Expanded(
-                                            child:
-                                                _buildExpenseSummaryCard(
-                                                    totalExpenses),
-                                          ),
-                                          const SizedBox(width: 12),
-                                          Expanded(
-                                            child:
-                                                _buildOccupancyCard(
-                                                    bookingCounts),
-                                          ),
-                                        ],
-                                      ),
-                                    ],
-                                  ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 16),
+                                Row(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.start,
+                                  children: [
+                                    Expanded(
+                                      flex: 2,
+                                      child: _buildExpenseSummaryCard(
+                                          totalExpenses),
+                                    ),
+                                    const SizedBox(width: 16),
+                                    Expanded(
+                                      flex: 3,
+                                      child: _buildOccupancyCard(
+                                          bookingCounts),
+                                    ),
+                                  ],
                                 ),
                               ],
                             ),
