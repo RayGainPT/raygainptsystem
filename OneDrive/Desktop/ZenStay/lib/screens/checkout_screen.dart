@@ -41,6 +41,8 @@ class CheckoutScreen extends StatefulWidget {
 
 class _CheckoutScreenState extends State<CheckoutScreen> {
   late List<TextEditingController> guestNameControllers;
+  late List<TextEditingController> guestPhoneControllers;
+  late List<TextEditingController> guestEmailControllers;
   late List<PlatformFile?> guestIdFiles;
   PlatformFile? receiptFile;
   bool isSubmitting = false;
@@ -68,6 +70,10 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     super.initState();
     guestNameControllers =
         List.generate(widget.totalPax, (_) => TextEditingController());
+    guestPhoneControllers =
+        List.generate(widget.totalPax, (_) => TextEditingController());
+    guestEmailControllers =
+        List.generate(widget.totalPax, (_) => TextEditingController());
     guestIdFiles = List<PlatformFile?>.filled(widget.totalPax, null);
     _fetchPropertyData();
   }
@@ -75,6 +81,12 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
   @override
   void dispose() {
     for (final c in guestNameControllers) {
+      c.dispose();
+    }
+    for (final c in guestPhoneControllers) {
+      c.dispose();
+    }
+    for (final c in guestEmailControllers) {
       c.dispose();
     }
     super.dispose();
@@ -104,7 +116,18 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     final allIds = guestIdFiles.every((f) => f != null);
     // receipt uploaded
     final hasReceipt = receiptFile != null;
-    return allNames && allIds && hasReceipt && !isSubmitting;
+    // at least one guest has BOTH phone and email filled in
+    bool hasPrimaryContact = false;
+    for (var i = 0; i < guestNameControllers.length; i++) {
+      final phone = guestPhoneControllers[i].text.trim();
+      final email = guestEmailControllers[i].text.trim();
+      if (phone.isNotEmpty && email.isNotEmpty) {
+        hasPrimaryContact = true;
+        break;
+      }
+    }
+
+    return allNames && allIds && hasReceipt && hasPrimaryContact && !isSubmitting;
   }
 
   Future<void> _submit() async {
@@ -142,6 +165,24 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       final List<String> guestNames =
           guestNameControllers.map((c) => c.text.trim()).toList();
 
+      // Compose guest contacts
+      final List<String> guestPhones =
+          guestPhoneControllers.map((c) => c.text.trim()).toList();
+      final List<String> guestEmails =
+          guestEmailControllers.map((c) => c.text.trim()).toList();
+
+      String primaryPhone = '';
+      String primaryEmail = '';
+      for (var i = 0; i < guestNames.length; i++) {
+        final phone = i < guestPhones.length ? guestPhones[i] : '';
+        final email = i < guestEmails.length ? guestEmails[i] : '';
+        if (phone.isNotEmpty && email.isNotEmpty) {
+          primaryPhone = phone;
+          primaryEmail = email;
+          break;
+        }
+      }
+
       // Compute checkOut
       int _hoursFromDuration(String s) {
         try {
@@ -162,6 +203,10 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       await FirebaseFirestore.instance.collection('bookings').add({
         'propertySlug': widget.slug,
         'guestNames': guestNames,
+        'guestPhones': guestPhones,
+        'guestEmails': guestEmails,
+        'guestPhone': primaryPhone,
+        'guestEmail': primaryEmail,
         'totalPrice': widget.total,
         'idUrls': idUrls,
         'receiptUrl': receiptUrl,
@@ -336,7 +381,9 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       appBar: AppBar(
           title: Text('Confirm and pay',
               style: GoogleFonts.poppins(fontWeight: FontWeight.w700))),
-      body: LayoutBuilder(builder: (context, constraints) {
+      body: Stack(
+        children: [
+          LayoutBuilder(builder: (context, constraints) {
         final isDesktop = constraints.maxWidth > 800;
 
         // Build common widgets
@@ -379,48 +426,88 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
               Text('Required by SMDC Greenmist PMO',
                   style: TextStyle(color: Colors.grey[600], fontSize: 12)),
               const SizedBox(height: 12),
+              Text(
+                'At least one guest must provide a contact number and email.',
+                style:
+                    TextStyle(color: Colors.grey[700], fontSize: 12),
+              ),
+              const SizedBox(height: 12),
               ListView.builder(
                 itemCount: widget.totalPax,
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
                 itemBuilder: (context, i) {
-                  final ctrl = guestNameControllers[i];
+                  final nameCtrl = guestNameControllers[i];
+                  final phoneCtrl = guestPhoneControllers[i];
+                  final emailCtrl = guestEmailControllers[i];
                   final file = guestIdFiles[i];
+                  final bool isPrimary = i == 0;
                   return Padding(
-                    padding: const EdgeInsets.only(bottom: 12.0),
-                    child: Row(mainAxisSize: MainAxisSize.min, children: [
-                      Expanded(
-                        child: TextField(
-                          controller: ctrl,
+                    padding: const EdgeInsets.only(bottom: 16.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(mainAxisSize: MainAxisSize.min, children: [
+                          Expanded(
+                            child: TextField(
+                              controller: nameCtrl,
+                              decoration: InputDecoration(
+                                labelText: 'Guest ${i + 1} Full Name *',
+                                border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(8)),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          ConstrainedBox(
+                            constraints: const BoxConstraints(
+                                minWidth: 72, maxWidth: 140),
+                            child: OutlinedButton.icon(
+                              onPressed: () => _pickGuestId(i),
+                              icon: file != null
+                                  ? const Icon(Icons.check_circle, size: 16)
+                                  : const Icon(Icons.badge, size: 16),
+                              label: FittedBox(
+                                fit: BoxFit.scaleDown,
+                                child: Text(
+                                    file != null ? 'Replace' : 'Attach ID',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis),
+                              ),
+                              style: OutlinedButton.styleFrom(
+                                minimumSize: const Size(72, 40),
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 10, vertical: 10),
+                              ),
+                            ),
+                          ),
+                        ]),
+                        const SizedBox(height: 8),
+                        TextField(
+                          controller: phoneCtrl,
+                          keyboardType: TextInputType.phone,
                           decoration: InputDecoration(
-                            labelText: 'Guest ${i + 1} Full Name *',
+                            labelText: isPrimary
+                                ? 'Contact Number *'
+                                : 'Contact Number (optional)',
                             border: OutlineInputBorder(
                                 borderRadius: BorderRadius.circular(8)),
                           ),
                         ),
-                      ),
-                      const SizedBox(width: 8),
-                      ConstrainedBox(
-                        constraints:
-                            const BoxConstraints(minWidth: 72, maxWidth: 140),
-                        child: OutlinedButton.icon(
-                          onPressed: () => _pickGuestId(i),
-                          icon: file != null
-                              ? const Icon(Icons.check_circle, size: 16)
-                              : const Icon(Icons.badge, size: 16),
-                          label: FittedBox(
-                            fit: BoxFit.scaleDown,
-                            child: Text(file != null ? 'Replace' : 'Attach ID',
-                                maxLines: 1, overflow: TextOverflow.ellipsis),
-                          ),
-                          style: OutlinedButton.styleFrom(
-                            minimumSize: const Size(72, 40),
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 10, vertical: 10),
+                        const SizedBox(height: 8),
+                        TextField(
+                          controller: emailCtrl,
+                          keyboardType: TextInputType.emailAddress,
+                          decoration: InputDecoration(
+                            labelText: isPrimary
+                                ? 'Email *'
+                                : 'Email (optional)',
+                            border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(8)),
                           ),
                         ),
-                      ),
-                    ]),
+                      ],
+                    ),
                   );
                 },
               )
@@ -554,6 +641,44 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
           ),
         );
       }),
+          if (isSubmitting)
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: SafeArea(
+                child: Container(
+                  width: double.infinity,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  color: Colors.black.withOpacity(0.7),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor:
+                              AlwaysStoppedAnimation<Color>(Colors.white),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Text(
+                        'Please wait, making booking confirmation...',
+                        style: GoogleFonts.poppins(
+                            color: Colors.white,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w500),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
     );
   }
 }

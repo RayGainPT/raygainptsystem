@@ -2,7 +2,6 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_storage/firebase_storage.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:table_calendar/table_calendar.dart';
 import 'package:intl/intl.dart';
@@ -53,15 +52,9 @@ class _BookingScreenState extends State<BookingScreen> {
   Set<int> selectedAddonIndexes = {};
   double lastAddonsTotal = 0.0;
 
-  // Storage-backed images
-  List<String> storagePhotos = [];
-
   @override
   void initState() {
     super.initState();
-    _fetchLiveRates();
-    _loadProperty();
-    _loadStorageImages();
   }
 
   @override
@@ -85,8 +78,6 @@ class _BookingScreenState extends State<BookingScreen> {
         data['images'] ??
         data['gallery'];
 
-    debugPrint('DEBUG photos raw type: ${raw.runtimeType}');
-
     final List<String> urls = <String>[];
     if (raw is List) {
       for (final item in raw) {
@@ -106,36 +97,7 @@ class _BookingScreenState extends State<BookingScreen> {
       });
     }
 
-    debugPrint('DEBUG photo URLs extracted: $urls');
     return urls;
-  }
-
-  Future<void> _loadStorageImages() async {
-    try {
-      final ref = FirebaseStorage.instance
-          .ref()
-          .child('properties')
-          .child(widget.slug)
-          .child('media');
-      final result = await ref.listAll();
-      final urls = <String>[];
-      for (final item in result.items) {
-        try {
-          final url = await item.getDownloadURL();
-          if (url.isNotEmpty) urls.add(url);
-        } catch (e) {
-          debugPrint('Error getting download URL for ${item.fullPath}: $e');
-        }
-      }
-      debugPrint('DEBUG storage photo URLs: $urls');
-      if (mounted) {
-        setState(() {
-          storagePhotos = urls;
-        });
-      }
-    } catch (e) {
-      debugPrint('Error listing storage images: $e');
-    }
   }
 
   void _applyPricingFromData(Map<String, dynamic> data) {
@@ -242,53 +204,6 @@ class _BookingScreenState extends State<BookingScreen> {
           : (weekdayRates.isNotEmpty ? weekdayRates : weekendRates);
     }
   }
-
-  Future<void> _loadProperty() async {
-    try {
-      final query = await FirebaseFirestore.instance
-          .collection('properties')
-          .where('slug', isEqualTo: widget.slug)
-          .limit(1)
-          .get();
-      if (query.docs.isNotEmpty) {
-        final data =
-            query.docs.first.data() as Map<String, dynamic>? ?? <String, dynamic>{};
-        setState(() {
-          propertyData = data;
-          _applyPricingFromData(data);
-        });
-        _recalculate();
-      }
-    } catch (_) {}
-  }
-
-  Future<void> _fetchLiveRates() async {
-    try {
-      final query = await FirebaseFirestore.instance
-          .collection('properties')
-          .where('slug', isEqualTo: widget.slug)
-          .limit(1)
-          .get();
-      if (query.docs.isNotEmpty) {
-        final data =
-            query.docs.first.data() as Map<String, dynamic>? ?? <String, dynamic>{};
-        debugPrint(
-            '[fetchLiveRates] weekdayRates keys: ${(data['weekdayRates'] as Map?)?.keys.toList()}');
-        debugPrint(
-            '[fetchLiveRates] weekendRates keys: ${(data['weekendRates'] as Map?)?.keys.toList()}');
-        debugPrint(
-            '[fetchLiveRates] holidayRates dates: ${(data['holidayRates'] as Map?)?.keys.toList()}');
-        setState(() {
-          _applyPricingFromData(data);
-        });
-        _recalculate();
-      }
-    } catch (e) {
-      debugPrint('Error fetching live rates: $e');
-    }
-  }
-
-  // removed unused helper _parsePrice
 
   bool _isWeekend(DateTime date) {
     return date.weekday == DateTime.friday ||
@@ -663,9 +578,11 @@ class _BookingScreenState extends State<BookingScreen> {
 
           ElevatedButton(
             style: ElevatedButton.styleFrom(
-                backgroundColor: primaryColor,
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 24, vertical: 12)),
+              backgroundColor: primaryColor,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 24, vertical: 12),
+            ),
             onPressed: baseTotal <= 0
                 ? null
                 : () {
@@ -688,8 +605,13 @@ class _BookingScreenState extends State<BookingScreen> {
                               securityDeposit: lastSecurityDeposit,
                             )));
                   },
-            child: Text('Reserve Now',
-                style: GoogleFonts.poppins(fontWeight: FontWeight.bold)),
+            child: Text(
+              'Reserve Now',
+              style: GoogleFonts.poppins(
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+              ),
+            ),
           ),
         ]);
 
@@ -705,9 +627,29 @@ class _BookingScreenState extends State<BookingScreen> {
   }
 
   Widget _buildGallery(List<String> photos, bool isMobile) {
-    if (photos.isEmpty)
+    if (photos.isEmpty) {
       return Container(
-          height: isMobile ? 250 : 400, color: Colors.grey.shade200);
+        height: isMobile ? 250 : 400,
+        color: Colors.grey.shade200,
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(
+                width: 28,
+                height: 28,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Loading photos...',
+                style: GoogleFonts.poppins(color: Colors.grey.shade600),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
 
     if (isMobile) {
       return SizedBox(
@@ -817,21 +759,13 @@ class _BookingScreenState extends State<BookingScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final List<String> photos = storagePhotos.isNotEmpty
-        ? storagePhotos
-        : _extractPhotoUrls(propertyData ?? <String, dynamic>{});
-
-    final isMobile = MediaQuery.of(context).size.width < 900;
-    final isDesktop = !isMobile;
-
-    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
       stream: FirebaseFirestore.instance
           .collection('properties')
-          .where('slug', isEqualTo: widget.slug)
-          .limit(1)
+          .doc(widget.slug)
           .snapshots(),
       builder: (context, snapshot) {
-        if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+        if (!snapshot.hasData || !snapshot.data!.exists) {
           return Scaffold(
             appBar: AppBar(
               title: Text(
@@ -842,9 +776,14 @@ class _BookingScreenState extends State<BookingScreen> {
             body: const Center(child: CircularProgressIndicator()),
           );
         }
-        final snapData = snapshot.data!.docs.first.data();
+        final snapData = snapshot.data!.data() ?? <String, dynamic>{};
         propertyData = snapData;
         _applyPricingFromData(snapData);
+
+        final List<String> photos = _extractPhotoUrls(snapData);
+
+        final isMobile = MediaQuery.of(context).size.width < 900;
+        final isDesktop = !isMobile;
 
         return Scaffold(
           appBar: AppBar(

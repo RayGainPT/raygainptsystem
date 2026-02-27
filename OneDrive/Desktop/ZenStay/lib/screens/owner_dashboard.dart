@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_storage/firebase_storage.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:intl/intl.dart';
 
 import '../utils/color_utils.dart';
@@ -69,9 +71,97 @@ class _OwnerDashboardState extends State<OwnerDashboard>
   @override
   void initState() {
     super.initState();
-    securityDepositCtrl.text = '0';
     if (widget.slug != null) slugController.text = widget.slug!;
     _fetchOwnedProperties();
+  }
+
+  Future<void> _showCreatePropertyDialog() async {
+    final nameCtrl = TextEditingController();
+    final locationCtrl = TextEditingController();
+    final slugCtrlLocal = TextEditingController();
+
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text('Create New Property', style: GoogleFonts.poppins()),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameCtrl,
+                decoration: const InputDecoration(labelText: 'Property Name'),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: locationCtrl,
+                decoration:
+                    const InputDecoration(labelText: 'Location (city, area)'),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: slugCtrlLocal,
+                decoration: const InputDecoration(
+                    labelText: 'Slug (optional, e.g. euroescape)'),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('Cancel')),
+            ElevatedButton(
+                onPressed: () async {
+                  final uid = FirebaseAuth.instance.currentUser?.uid;
+                  if (uid == null) {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                        content: Text('You must be signed in to add a property')));
+                    return;
+                  }
+                  final name = nameCtrl.text.trim();
+                  final location = locationCtrl.text.trim();
+                  String slug = slugCtrlLocal.text.trim();
+                  if (slug.isEmpty) {
+                    slug = name.toLowerCase().replaceAll(
+                        RegExp(r'[^a-z0-9]+'), '-'); // simple slugify
+                    slug = slug.replaceAll(RegExp(r'-+'), '-').trim();
+                    if (slug.endsWith('-')) {
+                      slug = slug.substring(0, slug.length - 1);
+                    }
+                  }
+                  if (slug.isEmpty) {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                        content: Text('Provide at least a name or slug')));
+                    return;
+                  }
+                  try {
+                    final docRef = FirebaseFirestore.instance
+                        .collection('properties')
+                        .doc(slug);
+                    await docRef.set({
+                      'ownerId': uid,
+                      'slug': slug,
+                      'name': name.isNotEmpty ? name : slug,
+                      'location': location,
+                      'createdAt': FieldValue.serverTimestamp(),
+                    }, SetOptions(merge: true));
+                    Navigator.of(context).pop();
+                    // Refresh list & select new property
+                    await _fetchOwnedProperties();
+                    setState(() {
+                      currentPropertyId = slug;
+                      slugController.text = slug;
+                    });
+                  } catch (e) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Create failed: $e')));
+                  }
+                },
+                child: const Text('Create')),
+          ],
+        );
+      },
+    );
   }
 
   /// Fetches properties for the current user and locks the first as selected.
@@ -201,28 +291,6 @@ class _OwnerDashboardState extends State<OwnerDashboard>
     mayaCtrl.text = (data['mayaNumber'] as String?) ?? '';
     bankDetailsCtrl.text = (data['bankDetails'] as String?) ?? '';
 
-    final maxBaseRaw = data['maxBaseGuests'];
-    if (maxBaseRaw != null) {
-      maxBaseGuestsCtrl.text = maxBaseRaw.toString();
-    } else if (maxBaseGuestsCtrl.text.isEmpty) {
-      maxBaseGuestsCtrl.text = '1';
-    }
-
-    final extraPaxRaw = data['extraPaxFee'];
-    if (extraPaxRaw != null) {
-      extraPaxFeeCtrl.text = extraPaxRaw.toString();
-    }
-
-    towelCtrl.text = (data['addOns']?['towels']?.toString() ?? '');
-    extraTableCtrl.text = (data['addOns']?['tables']?.toString() ?? '');
-    cleaningCtrl.text = (data['cleaningFee']?.toString() ?? '');
-    final secRaw = data['securityDeposit'];
-    if (secRaw != null) {
-      securityDepositCtrl.text = secRaw.toString();
-    } else if (securityDepositCtrl.text.isEmpty) {
-      securityDepositCtrl.text = '0';
-    }
-
     final p = data['primaryColor'];
     final s = data['secondaryColor'];
     try {
@@ -270,12 +338,6 @@ class _OwnerDashboardState extends State<OwnerDashboard>
           });
         }
 
-        final sec = data['securityDeposit'];
-        if (sec != null) {
-          securityDepositCtrl.text = sec.toString();
-        } else if (securityDepositCtrl.text.isEmpty) {
-          securityDepositCtrl.text = '0';
-        }
       });
     } catch (_) {
       // swallow errors in owner console to avoid breaking the dashboard
@@ -303,6 +365,17 @@ class _OwnerDashboardState extends State<OwnerDashboard>
             ])));
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       const SizedBox(height: 12),
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12.0),
+        child: SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            icon: const Icon(Icons.add_home),
+            label: const Text('Create New Property'),
+            onPressed: _showCreatePropertyDialog,
+          ),
+        ),
+      ),
       if (ownedProperties.isNotEmpty)
         Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12.0),
@@ -521,7 +594,20 @@ class _OwnerDashboardState extends State<OwnerDashboard>
         debugPrint('Bookings found: ${snapshot.data?.docs.length}');
         if (!snapshot.hasData)
           return const Center(child: CircularProgressIndicator());
-        final docs = snapshot.data!.docs;
+        // Sort newest bookings first using createdAt when available
+        final docs = snapshot.data!.docs.toList()
+          ..sort((a, b) {
+            final ad = a.data();
+            final bd = b.data();
+            final ca = ad['createdAt'];
+            final cb = bd['createdAt'];
+            if (ca is Timestamp && cb is Timestamp) {
+              return cb.compareTo(ca); // descending
+            }
+            if (ca is Timestamp) return -1;
+            if (cb is Timestamp) return 1;
+            return 0;
+          });
         if (docs.isEmpty)
           return const Center(child: Text('No active bookings found.'));
 
@@ -531,13 +617,23 @@ class _OwnerDashboardState extends State<OwnerDashboard>
             final b = docs[index].data();
             final bId = docs[index].id;
 
-            // Guest name is stored as guestNames (list) in checkout; keep backward compat.
+            // Guest names stored as guestNames (list); keep backward compat.
             final dynamic rawNames = b['guestNames'] ?? b['guestName'];
+            final List<String> guestNames = <String>[];
             String guestName = 'Guest';
             if (rawNames is List && rawNames.isNotEmpty) {
-              guestName = rawNames.first?.toString() ?? 'Guest';
+              for (final n in rawNames) {
+                if (n == null) continue;
+                final s = n.toString().trim();
+                if (s.isNotEmpty) guestNames.add(s);
+              }
+              if (guestNames.isNotEmpty) {
+                guestName = guestNames.first;
+              }
             } else if (rawNames != null && rawNames.toString().trim().isNotEmpty) {
-              guestName = rawNames.toString();
+              final s = rawNames.toString().trim();
+              guestName = s;
+              guestNames.add(s);
             }
 
             final status = _normalizeStatus(b['paymentStatus'] ?? b['status']);
@@ -550,17 +646,35 @@ class _OwnerDashboardState extends State<OwnerDashboard>
                 ? 'Stay: $nights Night${nights == 1 ? '' : 's'}'
                 : (hours != null ? 'Stay: $hours Hours' : 'Stay: —');
 
-            final email = (b['guestEmail'] ?? b['email'] ?? '').toString();
-            final phone = (b['guestPhone'] ?? b['phone'] ?? '').toString();
+            String email = (b['guestEmail'] ?? b['email'] ?? '').toString();
+            String phone = (b['guestPhone'] ?? b['phone'] ?? '').toString();
+            // Fallback to first entry in guestEmails/guestPhones arrays if present
+            final rawEmails = b['guestEmails'];
+            if (email.isEmpty && rawEmails is List && rawEmails.isNotEmpty) {
+              final first = rawEmails.first;
+              if (first != null) email = first.toString();
+            }
+            final rawPhones = b['guestPhones'];
+            if (phone.isEmpty && rawPhones is List && rawPhones.isNotEmpty) {
+              final first = rawPhones.first;
+              if (first != null) phone = first.toString();
+            }
 
             // Image urls (checkout uses idUrls list + receiptUrl)
-            String? idUrl;
+            final List<String> idUrls = <String>[];
             final rawIdUrls = b['idUrls'] ?? b['idUrl'] ?? b['guestIdPhoto'];
             if (rawIdUrls is List && rawIdUrls.isNotEmpty) {
-              idUrl = rawIdUrls.first?.toString();
+              for (final v in rawIdUrls) {
+                if (v == null) continue;
+                final s = v.toString().trim();
+                if (s.isNotEmpty) idUrls.add(s);
+              }
             } else if (rawIdUrls != null) {
-              idUrl = rawIdUrls.toString();
+              final s = rawIdUrls.toString().trim();
+              if (s.isNotEmpty) idUrls.add(s);
             }
+            // Keep first ID in case we want to extend summary views later
+            // (currently unused in the UI)
             final receiptUrl = (b['receiptUrl'] ?? b['proofOfPaymentUrl'])?.toString();
 
             return Padding(
@@ -669,6 +783,72 @@ class _OwnerDashboardState extends State<OwnerDashboard>
                                   fontSize: 13, color: Colors.grey.shade800),
                             ),
                             const SizedBox(height: 12),
+                            if (guestNames.isNotEmpty) ...[
+                              Text(
+                                'Guests & IDs',
+                                style: GoogleFonts.poppins(
+                                    fontWeight: FontWeight.w700),
+                              ),
+                              const SizedBox(height: 6),
+                              Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: List.generate(guestNames.length,
+                                    (i) {
+                                  final name = guestNames[i];
+                                  final String? guestIdUrl = (i < idUrls.length)
+                                      ? idUrls[i]
+                                      : null;
+                                  return Padding(
+                                    padding:
+                                        const EdgeInsets.only(bottom: 4.0),
+                                    child: Row(
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            name,
+                                            style: GoogleFonts.poppins(
+                                                fontSize: 13,
+                                                color: Colors
+                                                    .grey.shade800),
+                                          ),
+                                        ),
+                                        if (guestIdUrl != null &&
+                                            guestIdUrl.isNotEmpty)
+                                          InkWell(
+                                            onTap: () => _showImageDialog(
+                                                title: 'Guest ID - $name',
+                                                url: guestIdUrl),
+                                            child: Row(
+                                              mainAxisSize:
+                                                  MainAxisSize.min,
+                                              children: [
+                                                const Icon(Icons.badge,
+                                                    size: 18,
+                                                    color:
+                                                        Colors.blueGrey),
+                                                const SizedBox(width: 4),
+                                                Text('View ID',
+                                                    style:
+                                                        GoogleFonts.poppins(
+                                                            fontSize: 12,
+                                                            color: Colors
+                                                                .blueGrey)),
+                                              ],
+                                            ),
+                                          )
+                                        else
+                                          Text('No ID',
+                                              style: GoogleFonts.poppins(
+                                                  fontSize: 12,
+                                                  color: Colors
+                                                      .grey.shade500)),
+                                      ],
+                                    ),
+                                  );
+                                }),
+                              ),
+                              const SizedBox(height: 12),
+                            ],
                             Text(
                               'Verification',
                               style: GoogleFonts.poppins(
@@ -679,12 +859,6 @@ class _OwnerDashboardState extends State<OwnerDashboard>
                               spacing: 12,
                               runSpacing: 12,
                               children: [
-                                _thumbnailTile(
-                                  label: 'Guest ID',
-                                  url: idUrl,
-                                  onTap: () => _showImageDialog(
-                                      title: 'Guest ID', url: idUrl),
-                                ),
                                 _thumbnailTile(
                                   label: 'Proof of Payment',
                                   url: receiptUrl,
@@ -714,65 +888,170 @@ class _OwnerDashboardState extends State<OwnerDashboard>
     final propId = _propId();
     final docRef =
         FirebaseFirestore.instance.collection('properties').doc(propId);
-    return Padding(
-      padding: const EdgeInsets.all(16.0),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text('Property: $propId',
-            style: GoogleFonts.poppins(fontWeight: FontWeight.w700)),
-        const SizedBox(height: 12),
-        TextField(
-            controller: slugController,
-            decoration: const InputDecoration(
-                border: OutlineInputBorder(), hintText: 'enter property slug')),
-        const SizedBox(height: 12),
-        Text('Payment Setup',
-            style: GoogleFonts.poppins(fontWeight: FontWeight.w600)),
-        const SizedBox(height: 8),
-        TextField(
-            controller: gcashCtrl,
-            decoration: const InputDecoration(
-                border: OutlineInputBorder(), labelText: 'GCash Number')),
-        const SizedBox(height: 8),
-        TextField(
-            controller: mayaCtrl,
-            decoration: const InputDecoration(
-                border: OutlineInputBorder(), labelText: 'Maya Number')),
-        const SizedBox(height: 8),
-        TextField(
-            controller: bankDetailsCtrl,
-            decoration: const InputDecoration(
-                border: OutlineInputBorder(), labelText: 'Bank Details')),
-        const SizedBox(height: 12),
-        Row(children: [
-          ElevatedButton(
-              onPressed: () async {
-                try {
-                  await docRef.set({
-                    'gcashNumber': gcashCtrl.text.trim(),
-                    'mayaNumber': mayaCtrl.text.trim(),
-                    'bankDetails': bankDetailsCtrl.text.trim(),
-                    'updatedAt': FieldValue.serverTimestamp()
-                  }, SetOptions(merge: true));
-                  if (mounted)
-                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                        content: Text('Property payment settings saved')));
-                } catch (e) {
-                  if (mounted)
-                    ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('Save failed: $e')));
-                }
-              },
-              child: const Text('Save Property Settings')),
-          const SizedBox(width: 12),
-          TextButton(
-              onPressed: () => setState(() {
-                    gcashCtrl.text = '';
-                    mayaCtrl.text = '';
-                    bankDetailsCtrl.text = '';
-                  }),
-              child: const Text('Clear'))
-        ])
-      ]),
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: docRef.snapshots(),
+      builder: (context, snap) {
+        final data = snap.data?.data() ?? <String, dynamic>{};
+        final dynamic rawImages =
+            data['images'] ?? data['propertyPhotos'] ?? data['photos'] ?? [];
+        final List<String> imageUrls = <String>[];
+        if (rawImages is List) {
+          for (final v in rawImages) {
+            if (v == null) continue;
+            final s = v.toString().trim();
+            if (s.isNotEmpty) imageUrls.add(s);
+          }
+        }
+
+        return Padding(
+          padding: const EdgeInsets.all(16.0),
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('Property: $propId',
+                style: GoogleFonts.poppins(fontWeight: FontWeight.w700)),
+            const SizedBox(height: 12),
+            TextField(
+                controller: slugController,
+                decoration: const InputDecoration(
+                    border: OutlineInputBorder(),
+                    hintText: 'enter property slug')),
+            const SizedBox(height: 12),
+            Text('Payment Setup',
+                style: GoogleFonts.poppins(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 8),
+            TextField(
+                controller: gcashCtrl,
+                decoration: const InputDecoration(
+                    border: OutlineInputBorder(), labelText: 'GCash Number')),
+            const SizedBox(height: 8),
+            TextField(
+                controller: mayaCtrl,
+                decoration: const InputDecoration(
+                    border: OutlineInputBorder(), labelText: 'Maya Number')),
+            const SizedBox(height: 8),
+            TextField(
+                controller: bankDetailsCtrl,
+                decoration: const InputDecoration(
+                    border: OutlineInputBorder(), labelText: 'Bank Details')),
+            const SizedBox(height: 16),
+            Text('Property Photos',
+                style: GoogleFonts.poppins(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                ElevatedButton.icon(
+                  onPressed: () async {
+                    final propId = _propId();
+                    if (propId.isEmpty) return;
+                    try {
+                      final result = await FilePicker.platform.pickFiles(
+                        allowMultiple: true,
+                        type: FileType.image,
+                        withData: true,
+                      );
+                      if (result == null || result.files.isEmpty) return;
+                      final storage = FirebaseStorage.instance;
+                      final List<String> newUrls = [];
+                      for (final file in result.files) {
+                        final bytes = file.bytes;
+                        if (bytes == null) continue;
+                        final filename =
+                            '${DateTime.now().millisecondsSinceEpoch}_${file.name}';
+                        final ref = storage
+                            .ref()
+                            .child('properties')
+                            .child(propId)
+                            .child('media')
+                            .child(filename);
+                        await ref.putData(bytes);
+                        final url = await ref.getDownloadURL();
+                        newUrls.add(url);
+                      }
+                      if (newUrls.isNotEmpty) {
+                        await docRef.set({
+                          'images': FieldValue.arrayUnion(newUrls),
+                        }, SetOptions(merge: true));
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                  content: Text('Photos uploaded.')));
+                        }
+                      }
+                    } catch (e) {
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                            content: Text('Upload failed: $e')));
+                      }
+                    }
+                  },
+                  icon: const Icon(Icons.photo_library),
+                  label: const Text('Upload Property Photos'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            if (imageUrls.isNotEmpty)
+              SizedBox(
+                height: 90,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: imageUrls.length,
+                  separatorBuilder: (_, __) => const SizedBox(width: 8),
+                  itemBuilder: (context, index) => ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Image.network(
+                      imageUrls[index],
+                      width: 120,
+                      height: 90,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => Container(
+                        width: 120,
+                        height: 90,
+                        color: Colors.grey.shade200,
+                        child: const Icon(Icons.broken_image),
+                      ),
+                    ),
+                  ),
+                ),
+              )
+            else
+              Text('No photos yet. Upload some to make your listing pop.',
+                  style: GoogleFonts.poppins(color: Colors.grey.shade600)),
+            const SizedBox(height: 16),
+            Row(children: [
+              ElevatedButton(
+                  onPressed: () async {
+                    try {
+                      await docRef.set({
+                        'gcashNumber': gcashCtrl.text.trim(),
+                        'mayaNumber': mayaCtrl.text.trim(),
+                        'bankDetails': bankDetailsCtrl.text.trim(),
+                        'updatedAt': FieldValue.serverTimestamp()
+                      }, SetOptions(merge: true));
+                      if (mounted)
+                        ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                                content:
+                                    Text('Property payment settings saved')));
+                    } catch (e) {
+                      if (mounted)
+                        ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('Save failed: $e')));
+                    }
+                  },
+                  child: const Text('Save Property Settings')),
+              const SizedBox(width: 12),
+              TextButton(
+                  onPressed: () => setState(() {
+                        gcashCtrl.text = '';
+                        mayaCtrl.text = '';
+                        bankDetailsCtrl.text = '';
+                      }),
+                  child: const Text('Clear'))
+            ])
+          ]),
+        );
+      },
     );
   }
 
@@ -993,9 +1272,8 @@ class _OwnerDashboardState extends State<OwnerDashboard>
           extraTableCtrl.text = (data['addOns']?['tables']?.toString() ?? '');
         if (cleaningCtrl.text.isEmpty)
           cleaningCtrl.text = (data['cleaningFee']?.toString() ?? '');
-        if (securityDepositCtrl.text.isEmpty)
-          securityDepositCtrl.text =
-              (data['securityDeposit']?.toString() ?? '0');
+        securityDepositCtrl.text =
+            (data['securityDeposit']?.toString() ?? '0');
 
         // seed stagedHolidayRates from remote if not already staged
         if (stagedHolidayRates.isEmpty) {
@@ -1589,7 +1867,8 @@ class _OwnerDashboardState extends State<OwnerDashboard>
                                                   .replaceAll(',', '')) ??
                                           0.0,
                                       'securityDeposit': double.tryParse(
-                                              securityDepositCtrl.text) ??
+                                              securityDepositCtrl.text
+                                                  .replaceAll(',', '')) ??
                                           0.0,
                                       'addOns': addOns,
                                       'holidayDates': FieldValue.arrayUnion(

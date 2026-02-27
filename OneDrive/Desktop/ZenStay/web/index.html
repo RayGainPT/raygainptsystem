@@ -18,7 +18,7 @@
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
+  <meta name="description" content="ZenStay - smart property management and booking.">
 
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
@@ -31,6 +31,60 @@
 
   <title>zenstay</title>
   <link rel="manifest" href="manifest.json">
+
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f5f7fb;
+    }
+    .zs-loader-root {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 16px;
+      color: #1f2933;
+    }
+    .zs-logo-circle {
+      width: 64px;
+      height: 64px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #3b82f6, #06b6d4);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-weight: 700;
+      font-size: 26px;
+      box-shadow: 0 10px 25px rgba(15, 23, 42, 0.18);
+    }
+    .zs-loader-bar {
+      width: 160px;
+      height: 4px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: rgba(148, 163, 184, 0.4);
+    }
+    .zs-loader-bar-inner {
+      width: 40%;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #3b82f6, #06b6d4);
+      animation: zs-loader-slide 1.2s ease-in-out infinite;
+    }
+    @keyframes zs-loader-slide {
+      0% { transform: translateX(-100%); }
+      50% { transform: translateX(60%); }
+      100% { transform: translateX(160%); }
+    }
+    .zs-loader-caption {
+      font-size: 14px;
+      color: #4b5563;
+    }
+  </style>
 </head>
 <body>
   <!--
@@ -41,6 +95,25 @@
     For more details:
     * https://docs.flutter.dev/platform-integration/web/initialization
   -->
+
+  <!-- ZenStay branded preloader, removed after first Flutter frame -->
+  <div id="zs-loader" class="zs-loader-root">
+    <div class="zs-logo-circle">Z</div>
+    <div class="zs-loader-bar">
+      <div class="zs-loader-bar-inner"></div>
+    </div>
+    <div class="zs-loader-caption">Preparing your ZenStay experience…</div>
+  </div>
+
+  <script>
+    window.addEventListener('flutter-first-frame', function () {
+      var loader = document.getElementById('zs-loader');
+      if (loader && loader.parentNode) {
+        loader.parentNode.removeChild(loader);
+      }
+    });
+  </script>
+
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>
