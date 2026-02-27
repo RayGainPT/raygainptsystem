@@ -2,7 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'screens/landing_screen.dart';
+import 'screens/landing_page.dart';
 import 'screens/booking_screen.dart';
 import 'screens/owner_dashboard.dart';
 import 'screens/login_screen.dart';
@@ -28,7 +28,7 @@ final GoRouter appRouter = GoRouter(
   routes: [
     GoRoute(
       path: '/',
-      builder: (context, state) => const LandingScreen(),
+      builder: (context, state) => const LandingPage(),
     ),
     // Static and more-specific routes first so they don't get captured by '/:slug'
     GoRoute(
@@ -41,6 +41,11 @@ final GoRouter appRouter = GoRouter(
     ),
     GoRoute(
       path: '/owner',
+      redirect: (context, state) {
+        final user = FirebaseAuth.instance.currentUser;
+        if (user == null) return '/login';
+        return null;
+      },
       builder: (context, state) => const OwnerDashboard(),
     ),
     GoRoute(
