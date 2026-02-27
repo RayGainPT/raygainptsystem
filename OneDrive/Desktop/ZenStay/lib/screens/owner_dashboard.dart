@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'performance_dashboard.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
@@ -18,7 +19,8 @@ class OwnerDashboard extends StatefulWidget {
 
 class _OwnerDashboardState extends State<OwnerDashboard>
     with SingleTickerProviderStateMixin {
-  int _selectedIndex = 3;
+  int _selectedIndex = 0;
+  DateTime? _bookingFilterDate;
 
   Color primaryColor = Colors.blue;
   Color secondaryColor = Colors.teal;
@@ -401,10 +403,26 @@ class _OwnerDashboardState extends State<OwnerDashboard>
                   await _loadPropertyData(sel.id);
                 })),
       const SizedBox(height: 12),
-      _sideButton('Live Bookings', 0, Icons.event),
-      _sideButton('Property Settings', 1, Icons.home),
-      _sideButton('Theme Decorator', 2, Icons.color_lens),
-      _sideButton('Pricing Manager', 3, Icons.monetization_on),
+      _sideButton('Performance', 0, Icons.insights),
+      _sideButton('Manage Bookings', 1, Icons.event),
+      _sideButton('Property Settings', 2, Icons.home),
+      _sideButton('Theme Decorator', 3, Icons.color_lens),
+      _sideButton('Pricing Manager', 4, Icons.monetization_on),
+      const Spacer(),
+      const Divider(),
+      ListTile(
+        leading: const Icon(Icons.logout),
+        title: Text('Logout', style: GoogleFonts.poppins()),
+        onTap: () async {
+          try {
+            await FirebaseAuth.instance.signOut();
+          } catch (_) {}
+          if (mounted) {
+            Navigator.of(context).pushNamedAndRemoveUntil(
+                '/', (route) => false);
+          }
+        },
+      ),
     ]);
   }
 
@@ -595,7 +613,7 @@ class _OwnerDashboardState extends State<OwnerDashboard>
         if (!snapshot.hasData)
           return const Center(child: CircularProgressIndicator());
         // Sort newest bookings first using createdAt when available
-        final docs = snapshot.data!.docs.toList()
+        final allDocs = snapshot.data!.docs.toList()
           ..sort((a, b) {
             final ad = a.data();
             final bd = b.data();
@@ -608,8 +626,47 @@ class _OwnerDashboardState extends State<OwnerDashboard>
             if (cb is Timestamp) return 1;
             return 0;
           });
-        if (docs.isEmpty)
-          return const Center(child: Text('No active bookings found.'));
+        // Optional date filter from performance calendar
+        List<QueryDocumentSnapshot<Map<String, dynamic>>> docs =
+            allDocs;
+        final filterDate = _bookingFilterDate != null
+            ? DateTime(_bookingFilterDate!.year,
+                _bookingFilterDate!.month,
+                _bookingFilterDate!.day)
+            : null;
+        if (filterDate != null) {
+          docs = allDocs.where((d) {
+            final b = d.data();
+            final checkIn = _asDate(
+                b['checkInDate'] ?? b['checkIn'] ?? b['startDate']);
+            final checkOut = _asDate(b['checkOutDate'] ??
+                b['checkOut'] ??
+                b['endDate']);
+            if (checkIn == null || checkOut == null) return false;
+            var cursor = DateTime(
+                checkIn.year, checkIn.month, checkIn.day);
+            final end = DateTime(
+                checkOut.year, checkOut.month, checkOut.day);
+            while (cursor.isBefore(end)) {
+              if (cursor.year == filterDate.year &&
+                  cursor.month == filterDate.month &&
+                  cursor.day == filterDate.day) {
+                return true;
+              }
+              cursor =
+                  cursor.add(const Duration(days: 1));
+            }
+            return false;
+          }).toList();
+        }
+        if (docs.isEmpty) {
+          return Center(
+              child: Text(
+                  filterDate == null
+                      ? 'No active bookings found.'
+                      : 'No bookings found for this date.',
+                  style: GoogleFonts.poppins()));
+        }
 
         return ListView.builder(
           itemCount: docs.length,
@@ -1184,14 +1241,35 @@ class _OwnerDashboardState extends State<OwnerDashboard>
           .showSnackBar(const SnackBar(content: Text('Holiday added to list')));
   }
 
-  void _deleteStagedHoliday(String key) {
+  Future<void> _deleteStagedHoliday(String key) async {
     setState(() {
       stagedHolidayRates.remove(key);
       if (editingHolidayKey == key) editingHolidayKey = null;
     });
-    if (mounted)
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('Holiday removed')));
+
+    try {
+      final propId = _propId();
+      if (propId.isNotEmpty) {
+        final docRef = FirebaseFirestore.instance
+            .collection('properties')
+            .doc(propId);
+        await docRef.update({
+          'holidayRates.$key': FieldValue.delete(),
+          'holidayDates': FieldValue.arrayRemove([key]),
+        });
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Holiday removed')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to remove holiday: $e')),
+        );
+      }
+    }
   }
 
   void _editStagedHoliday(String key) {
@@ -1989,15 +2067,26 @@ class _OwnerDashboardState extends State<OwnerDashboard>
     Widget content;
     switch (_selectedIndex) {
       case 0:
-        content = _liveBookings();
+        content = PerformanceDashboard(
+          propertyId: _propId(),
+          onDateSelected: (selected) {
+            setState(() {
+              _bookingFilterDate = selected;
+              _selectedIndex = 1;
+            });
+          },
+        );
         break;
       case 1:
-        content = _propertySettings();
+        content = _liveBookings();
         break;
       case 2:
-        content = _themeDecorator();
+        content = _propertySettings();
         break;
       case 3:
+        content = _themeDecorator();
+        break;
+      case 4:
       default:
         content = _pricingManager();
     }

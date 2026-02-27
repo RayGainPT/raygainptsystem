@@ -38,10 +38,75 @@ class _LoginScreenState extends State<LoginScreen> {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _loading = true);
     try {
-      await FirebaseAuth.instance.signInWithEmailAndPassword(
+      final credential = await FirebaseAuth.instance
+          .signInWithEmailAndPassword(
         email: _emailCtrl.text.trim(),
         password: _pwCtrl.text,
       );
+      final user = credential.user;
+      if (user == null) {
+        throw FirebaseAuthException(
+            code: 'user-not-found',
+            message: 'Unable to sign in. Please try again.');
+      }
+
+      // Refresh to ensure latest verification state
+      await user.reload();
+      final refreshed = FirebaseAuth.instance.currentUser;
+      if (refreshed != null && !refreshed.emailVerified) {
+        if (!mounted) return;
+        final resend = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: Text('Verify your email',
+                style: GoogleFonts.poppins(
+                    fontWeight: FontWeight.w700)),
+            content: Text(
+              'Please verify your email address before logging in.\n\n'
+              'Didn\'t receive the email? You can resend it.',
+              style: GoogleFonts.poppins(fontSize: 14),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () =>
+                    Navigator.of(context).pop(false),
+                child: Text('Close',
+                    style: GoogleFonts.poppins()),
+              ),
+              TextButton(
+                onPressed: () =>
+                    Navigator.of(context).pop(true),
+                child: Text('Resend Email',
+                    style: GoogleFonts.poppins(
+                        fontWeight: FontWeight.w600)),
+              ),
+            ],
+          ),
+        );
+
+        if (resend == true) {
+          try {
+            await refreshed.sendEmailVerification();
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('Verification email resent.',
+                      style: const TextStyle(color: Colors.white)),
+                  backgroundColor: Colors.teal.shade700,
+                ),
+              );
+            }
+          } catch (_) {}
+        }
+
+        await FirebaseAuth.instance.signOut();
+        if (mounted) {
+          await _showError(
+              'Please verify your email before logging in.');
+        }
+        return;
+      }
+
       if (!mounted) return;
       context.go('/dashboard/euroescape');
     } on FirebaseAuthException catch (e) {
@@ -202,8 +267,14 @@ class _LoginScreenState extends State<LoginScreen> {
 
               const SizedBox(height: 8),
               TextButton(
-                onPressed: () => context.go('/'),
-                child: Text('Back to landing', style: GoogleFonts.poppins()),
+                onPressed: _loading ? null : () => context.go('/signup'),
+                child: Text('Don\'t have an account? Sign up',
+                    style: GoogleFonts.poppins()),
+              ),
+              TextButton(
+                onPressed: _loading ? null : () => context.go('/'),
+                child: Text('Back to landing',
+                    style: GoogleFonts.poppins()),
               ),
             ],
           ),
