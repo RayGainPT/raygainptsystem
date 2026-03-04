@@ -57,6 +57,9 @@ class _BookingScreenState extends State<BookingScreen> {
   static const int _maxDailyHours = 24;
   bool _availabilityLoaded = false;
 
+  // Gallery state (desktop): which photo is shown as the large image
+  int _primaryPhotoIndex = 0;
+
   @override
   void initState() {
     super.initState();
@@ -133,9 +136,16 @@ class _BookingScreenState extends State<BookingScreen> {
           }
         }
 
-        for (final day in days) {
-          if (durHours <= 0) continue;
+        // Multi-night (overnight) stays: fully block every date in the range
+        if (days.length > 1) {
+          for (final day in days) {
+            temp[day] = _maxDailyHours;
+          }
+        } else if (days.length == 1 && durHours > 0) {
+          // Single-day duration booking: add hours so remaining hours logic applies
+          final day = days.single;
           temp[day] = (temp[day] ?? 0) + durHours;
+          if (temp[day]! > _maxDailyHours) temp[day] = _maxDailyHours;
         }
       }
       if (mounted) {
@@ -200,9 +210,14 @@ class _BookingScreenState extends State<BookingScreen> {
         }
         final int durHours =
             _hoursFromDurationLabel(data['selectedDuration']?.toString());
-        for (final d in days) {
-          if (durHours <= 0) continue;
+        if (days.length > 1) {
+          for (final d in days) {
+            occupiedHours[d] = _maxDailyHours;
+          }
+        } else if (days.length == 1 && durHours > 0) {
+          final d = days.single;
           occupiedHours[d] = (occupiedHours[d] ?? 0) + durHours;
+          if (occupiedHours[d]! > _maxDailyHours) occupiedHours[d] = _maxDailyHours;
         }
       }
 
@@ -245,21 +260,26 @@ class _BookingScreenState extends State<BookingScreen> {
         data['gallery'];
 
     final List<String> urls = <String>[];
+    String? _asUrl(dynamic v) {
+      if (v == null) return null;
+      if (v is String) return v.trim();
+      if (v is Map) return (v['url'] ?? v['src'])?.toString().trim();
+      return v.toString().trim();
+    }
+
     if (raw is List) {
       for (final item in raw) {
-        if (item == null) continue;
-        if (item is String) {
-          if (item.trim().isNotEmpty) urls.add(item.trim());
-        } else if (item is Map) {
-          final u = item['url']?.toString() ?? item['src']?.toString();
-          if (u != null && u.trim().isNotEmpty) urls.add(u.trim());
+        final u = _asUrl(item);
+        if (u != null && u.isNotEmpty && (u.startsWith('http://') || u.startsWith('https://'))) {
+          urls.add(u);
         }
       }
     } else if (raw is Map) {
-      // Map of id -> url
       raw.forEach((_, v) {
-        final u = v?.toString();
-        if (u != null && u.trim().isNotEmpty) urls.add(u.trim());
+        final u = _asUrl(v);
+        if (u != null && u.isNotEmpty && (u.startsWith('http://') || u.startsWith('https://'))) {
+          urls.add(u);
+        }
       });
     }
 
@@ -661,14 +681,24 @@ class _BookingScreenState extends State<BookingScreen> {
   Widget _buildBookingCard({bool isDesktop = false}) {
     final baseTotal = lastBaseStayPrice * lastStayNights;
 
-    final addonsWidget = addons.isEmpty
+    // Only show add-ons that have a price > 0 (set in Pricing Manager)
+    final addonEntriesWithPrice = <MapEntry<int, Map<String, dynamic>>>[];
+    for (int i = 0; i < addons.length; i++) {
+      final a = addons[i];
+      double p = 0.0;
+      if (a['price'] is num) p = (a['price'] as num).toDouble();
+      else p = double.tryParse(a['price']?.toString() ?? '') ?? 0.0;
+      if (p > 0) addonEntriesWithPrice.add(MapEntry(i, a));
+    }
+    final addonsWidget = addonEntriesWithPrice.isEmpty
         ? const SizedBox.shrink()
         : Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const SizedBox(height: 8),
-              ...List.generate(addons.length, (i) {
-                final a = addons[i];
+              ...addonEntriesWithPrice.map((e) {
+                final i = e.key;
+                final a = e.value;
                 final title =
                     a['name']?.toString() ?? a['label']?.toString() ?? 'Addon';
                 double price = 0.0;
@@ -693,26 +723,29 @@ class _BookingScreenState extends State<BookingScreen> {
                   controlAffinity: ListTileControlAffinity.leading,
                   contentPadding: EdgeInsets.zero,
                 );
-              })
+              }),
             ],
           );
-
-    // compute an explicit night label (use nights when range selected, otherwise show selected duration)
-    int _computedNights = 0;
-    if (_rangeStart != null && _rangeEnd != null) {
-      _computedNights = _rangeEnd!.difference(_rangeStart!).inDays;
-    } else if (_selectedRangeDates.isNotEmpty) {
-      _computedNights = _selectedRangeDates.length;
-    } else {
-      _computedNights = lastStayNights;
-    }
-    final String stayLabel = _computedNights > 0
-        ? '$_computedNights Night${_computedNights > 1 ? 's' : ''}'
-        : (selectedDuration ?? '${lastStayNights} night');
 
     // compute extra heads for display
     final int displayExtraHeads = math.max(0, totalPax - maxBaseGuests);
     final String headsLabel = displayExtraHeads == 1 ? 'head' : 'heads';
+
+    // Base rate display: per-night first for multi-night, then total (no weekday/weekend label)
+    final bool isMultiNight = lastStayNights > 1;
+    final List<Widget> baseRateLines = [];
+    if (isMultiNight) {
+      baseRateLines.add(_buildPriceLine(
+          'Base Rate (per night)',
+          '₱${lastBaseStayPrice.toStringAsFixed(2)}'));
+      baseRateLines.add(_buildPriceLine(
+          'Base Rate × $lastStayNights Nights',
+          '₱${baseTotal.toStringAsFixed(2)}'));
+    } else {
+      baseRateLines.add(_buildPriceLine(
+          lastStayNights == 1 ? 'Base Rate (1 Night)' : 'Base Rate',
+          '₱${baseTotal.toStringAsFixed(2)}'));
+    }
 
     final content = Column(
         mainAxisSize: MainAxisSize.min,
@@ -724,9 +757,7 @@ class _BookingScreenState extends State<BookingScreen> {
           const SizedBox(height: 12),
 
           // Invoice-style line items
-          _buildPriceLine(
-              'Base Rate ($stayLabel${appliedRateLabel.isNotEmpty ? ' · $appliedRateLabel' : ''})',
-              '₱${baseTotal.toStringAsFixed(2)}'),
+          ...baseRateLines,
           _buildPriceLine(
               'Base Guests Included', '$maxBaseGuests Guest${maxBaseGuests == 1 ? '' : 's'}'),
           if (lastCleaningFee > 0)
@@ -742,6 +773,18 @@ class _BookingScreenState extends State<BookingScreen> {
               '₱${lastSecurityDeposit.toStringAsFixed(2)}'),
           const Divider(height: 32, thickness: 1),
 
+          if (baseTotal <= 0 && weekdayRates.isEmpty && weekendRates.isEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8.0),
+              child: Text(
+                'Rates not set for this property yet.',
+                style: GoogleFonts.poppins(
+                  fontSize: 12,
+                  color: Colors.grey.shade600,
+                  fontStyle: FontStyle.italic,
+                ),
+              ),
+            ),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -764,7 +807,7 @@ class _BookingScreenState extends State<BookingScreen> {
               padding: const EdgeInsets.symmetric(
                   horizontal: 24, vertical: 12),
             ),
-            onPressed: baseTotal <= 0
+            onPressed: (baseTotal <= 0 || grandTotal <= 0)
                 ? null
                 : () async {
                     final isAvailable =
@@ -834,15 +877,17 @@ class _BookingScreenState extends State<BookingScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const SizedBox(
-                width: 28,
-                height: 28,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              ),
+              Icon(Icons.photo_library_outlined, size: 48, color: Colors.grey.shade400),
               const SizedBox(height: 12),
               Text(
-                'Loading photos...',
+                'No photos for this property yet.',
                 style: GoogleFonts.poppins(color: Colors.grey.shade600),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'On web, if you uploaded photos and see broken images,\nconfigure Storage CORS (see STORAGE_CORS_SETUP.md).',
+                textAlign: TextAlign.center,
+                style: GoogleFonts.poppins(fontSize: 11, color: Colors.grey.shade500),
               ),
             ],
           ),
@@ -876,8 +921,8 @@ class _BookingScreenState extends State<BookingScreen> {
     }
 
     // Desktop: large image + thumbnails
-    final primary = photos.first;
-    final thumbs = photos.length > 1 ? photos.sublist(1) : <String>[];
+    final int primaryIndex = _primaryPhotoIndex.clamp(0, photos.length - 1);
+    final String primary = photos[primaryIndex];
     return SizedBox(
       height: 400,
       child: Column(
@@ -905,30 +950,57 @@ class _BookingScreenState extends State<BookingScreen> {
             height: 80,
             child: ListView.builder(
               scrollDirection: Axis.horizontal,
-              itemCount: thumbs.length,
-              itemBuilder: (c, i) => Padding(
-                padding: const EdgeInsets.only(right: 8.0),
-                child: Image.network(
-                  thumbs[i],
-                  width: 120,
-                  height: 80,
-                  fit: BoxFit.cover,
-                  loadingBuilder: (context, child, progress) {
-                    if (progress == null) return child;
-                    return Container(
-                      color: Colors.grey.shade200,
-                      child: const Center(
-                          child: CircularProgressIndicator(strokeWidth: 2)),
-                    );
-                  },
-                  errorBuilder: (context, error, stackTrace) => Container(
-                    color: Colors.grey.shade200,
-                    child: const Center(
-                        child:
-                            Icon(Icons.broken_image, color: Colors.red)),
+              itemCount: photos.length,
+              itemBuilder: (c, i) {
+                final thumbUrl = photos[i];
+                final bool isSelected = i == primaryIndex;
+                return Padding(
+                  padding: const EdgeInsets.only(right: 8.0),
+                  child: InkWell(
+                    onTap: () {
+                      setState(() {
+                        _primaryPhotoIndex = i;
+                      });
+                    },
+                    child: Container(
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: isSelected
+                              ? primaryColor
+                              : Colors.transparent,
+                          width: 2,
+                        ),
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(6),
+                        child: Image.network(
+                          thumbUrl,
+                          width: 120,
+                          height: 80,
+                          fit: BoxFit.cover,
+                          loadingBuilder: (context, child, progress) {
+                            if (progress == null) return child;
+                            return Container(
+                              color: Colors.grey.shade200,
+                              child: const Center(
+                                  child:
+                                      CircularProgressIndicator(strokeWidth: 2)),
+                            );
+                          },
+                          errorBuilder: (context, error, stackTrace) =>
+                              Container(
+                            color: Colors.grey.shade200,
+                            child: const Center(
+                                child: Icon(Icons.broken_image,
+                                    color: Colors.red)),
+                          ),
+                        ),
+                      ),
+                    ),
                   ),
-                ),
-              ),
+                );
+              },
             ),
           ),
         ],
@@ -979,6 +1051,10 @@ class _BookingScreenState extends State<BookingScreen> {
         propertyData = snapData;
         _applyPricingFromData(snapData);
 
+        final rawLabel = (snapData['propertyLabel'] ?? snapData['name'] ?? widget.slug)?.toString().trim() ?? '';
+        final String displayName = rawLabel.isNotEmpty
+            ? rawLabel
+            : (widget.slug.isNotEmpty ? widget.slug[0].toUpperCase() + widget.slug.substring(1) : widget.slug);
         final List<String> photos = _extractPhotoUrls(snapData);
 
         final isMobile = MediaQuery.of(context).size.width < 900;
@@ -987,7 +1063,7 @@ class _BookingScreenState extends State<BookingScreen> {
         return Scaffold(
           appBar: AppBar(
             title: Text(
-              'Book — ${widget.slug.isNotEmpty ? widget.slug[0].toUpperCase() + widget.slug.substring(1) : widget.slug}',
+              'Book — $displayName',
               style: GoogleFonts.poppins(fontWeight: FontWeight.w600),
             ),
           ),
@@ -1007,7 +1083,7 @@ class _BookingScreenState extends State<BookingScreen> {
                           children: [
                             _buildGallery(photos, false),
                             const SizedBox(height: 12),
-                            Text(widget.slug.toUpperCase(),
+                            Text(displayName,
                                 style: GoogleFonts.poppins(
                                     fontSize: 22, fontWeight: FontWeight.w800)),
                             const SizedBox(height: 8),
@@ -1028,8 +1104,14 @@ class _BookingScreenState extends State<BookingScreen> {
                                   isSameDay(_selectedDay, day),
                               onDaySelected: (selectedDay, focusedDay) {
                                 if (!isSameDay(_selectedDay, selectedDay)) {
+                                  final active =
+                                      _getApplicableRateMap(selectedDay);
                                   if (_availabilityLoaded &&
-                                      _isDateFullyBooked(selectedDay)) {
+                                      active.isEmpty &&
+                                      (_dailyBookedHours[_dateOnly(
+                                                  selectedDay)] ??
+                                              0) >
+                                          0) {
                                     ScaffoldMessenger.of(context)
                                         .showSnackBar(SnackBar(
                                       content: Text(
@@ -1041,8 +1123,6 @@ class _BookingScreenState extends State<BookingScreen> {
                                     ));
                                     return;
                                   }
-                                  final active =
-                                      _getApplicableRateMap(selectedDay);
                                   final durations =
                                       active.keys.toList()..sort();
                                   setState(() {
@@ -1088,7 +1168,13 @@ class _BookingScreenState extends State<BookingScreen> {
                                     .subtract(const Duration(days: 1)));
                                 if (isPast) return false;
                                 if (!_availabilityLoaded) return true;
-                                return !_isDateFullyBooked(d);
+                                final active = _getApplicableRateMap(d);
+                                // fully booked when there are booked hours but no durations left
+                                if ((_dailyBookedHours[_dateOnly(d)] ?? 0) > 0 &&
+                                    active.isEmpty) {
+                                  return false;
+                                }
+                                return true;
                               },
                             ),
                             const SizedBox(height: 24),
@@ -1113,7 +1199,7 @@ class _BookingScreenState extends State<BookingScreen> {
                     children: [
                       _buildGallery(photos, true),
                       const SizedBox(height: 12),
-                      Text(widget.slug.toUpperCase(),
+                      Text(displayName,
                           style: GoogleFonts.poppins(
                               fontSize: 20, fontWeight: FontWeight.w800)),
                       const SizedBox(height: 8),
@@ -1132,8 +1218,14 @@ class _BookingScreenState extends State<BookingScreen> {
                             isSameDay(_selectedDay, day),
                         onDaySelected: (selectedDay, focusedDay) {
                           if (!isSameDay(_selectedDay, selectedDay)) {
+                            final active =
+                                _getApplicableRateMap(selectedDay);
                             if (_availabilityLoaded &&
-                                _isDateFullyBooked(selectedDay)) {
+                                active.isEmpty &&
+                                (_dailyBookedHours[_dateOnly(
+                                            selectedDay)] ??
+                                        0) >
+                                    0) {
                               ScaffoldMessenger.of(context)
                                   .showSnackBar(SnackBar(
                                 content: Text(
@@ -1145,8 +1237,6 @@ class _BookingScreenState extends State<BookingScreen> {
                               ));
                               return;
                             }
-                            final active =
-                                _getApplicableRateMap(selectedDay);
                             final durations = active.keys.toList()..sort();
                             setState(() {
                               _selectedDay = selectedDay;
@@ -1190,7 +1280,12 @@ class _BookingScreenState extends State<BookingScreen> {
                               .subtract(const Duration(days: 1)));
                           if (isPast) return false;
                           if (!_availabilityLoaded) return true;
-                          return !_isDateFullyBooked(d);
+                          final active = _getApplicableRateMap(d);
+                          if ((_dailyBookedHours[_dateOnly(d)] ?? 0) > 0 &&
+                              active.isEmpty) {
+                            return false;
+                          }
+                          return true;
                         },
                       ),
                       const SizedBox(height: 24),

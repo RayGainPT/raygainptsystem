@@ -43,6 +43,9 @@ class _PerformanceDashboardState extends State<PerformanceDashboard> {
     return null;
   }
 
+  /// Normalize to midnight (12:00:00 AM) to avoid off-by-one-day errors.
+  DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
+
   String _normalizeStatus(dynamic raw) {
     final s = (raw ?? '').toString().toLowerCase().trim();
     if (s.contains('verify')) return 'verified';
@@ -129,9 +132,11 @@ class _PerformanceDashboardState extends State<PerformanceDashboard> {
     final primary = const Color(0xFF008080);
     final blue = const Color(0xFF2196F3);
 
+    // Single source of truth: only verified bookings for this property
     final bookingsStream = FirebaseFirestore.instance
         .collection('bookings')
         .where('propertySlug', isEqualTo: widget.propertyId)
+        .where('status', isEqualTo: 'verified')
         .snapshots();
 
     final expensesStream = FirebaseFirestore.instance
@@ -143,78 +148,75 @@ class _PerformanceDashboardState extends State<PerformanceDashboard> {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: bookingsStream,
       builder: (context, bookingSnap) {
-        if (bookingSnap.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator());
-        }
-
-        final bookings = bookingSnap.data?.docs ?? const [];
+        // Empty/error state: still show dashboard and calendar with 0 markers (no red error screen)
+        final hasError = bookingSnap.hasError;
+        final isLoading = bookingSnap.connectionState == ConnectionState.waiting;
+        final bookings = hasError ? <QueryDocumentSnapshot<Map<String, dynamic>>>[] : (bookingSnap.data?.docs ?? const []);
 
         double totalEarnings = 0.0;
         int nightsBooked = 0;
         int activeGuests = 0;
 
         final Map<String, double> monthlyRevenue = {};
-        final Map<DateTime, int> bookingCounts = {};
+        final Map<DateTime, int> dailyCounts = {};
         final Map<String, int> statusCounts = {
           'verified': 0,
           'rejected': 0,
           'pending': 0,
         };
 
+        // Range-to-date expansion: for every verified booking, loop each day between checkIn and checkOut
         for (final doc in bookings) {
           final data = doc.data();
-          final status =
-              _normalizeStatus(data['paymentStatus'] ?? data['status']);
-          statusCounts[status] = (statusCounts[status] ?? 0) + 1;
+          final total = (data['totalPrice'] as num?)?.toDouble() ?? 0.0;
+          statusCounts['verified'] = (statusCounts['verified'] ?? 0) + 1;
+          totalEarnings += total;
+          nightsBooked += _calcNights(data);
+          final guests = (data['totalPax'] as num?)?.toInt() ?? 0;
+          activeGuests += guests > 0 ? guests : 0;
 
-          final total =
-              (data['totalPrice'] as num?)?.toDouble() ?? 0.0;
+          DateTime? when;
+          final created = data['createdAt'];
+          if (created is Timestamp) {
+            when = created.toDate();
+          } else {
+            when = _asDate(data['checkInDate'] ?? data['checkIn'] ?? data['startDate']);
+          }
+          when ??= DateTime.now();
+          final bucket = DateTime(when.year, when.month);
+          final key = '${bucket.year}-${bucket.month.toString().padLeft(2, '0')}';
+          monthlyRevenue[key] = (monthlyRevenue[key] ?? 0.0) + total;
 
-          if (status == 'verified') {
-            totalEarnings += total;
-            nightsBooked += _calcNights(data);
-            final guests =
-                (data['totalPax'] as num?)?.toInt() ?? 0;
-            activeGuests += guests > 0 ? guests : 0;
-
-            DateTime? when;
-            final created = data['createdAt'];
-            if (created is Timestamp) {
-              when = created.toDate();
-            } else {
-              // fall back to check-in date
-              when = _asDate(data['checkInDate'] ??
-                  data['checkIn'] ??
-                  data['startDate']);
-            }
-            when ??= DateTime.now();
-            final bucket =
-                DateTime(when.year, when.month); // month bucket
-            final key = '${bucket.year}-${bucket.month.toString().padLeft(2, '0')}';
-            monthlyRevenue[key] =
-                (monthlyRevenue[key] ?? 0.0) + total;
-
-            // Occupancy counts per day between check-in (inclusive) and check-out (exclusive)
-            final checkIn = _asDate(data['checkInDate'] ??
-                data['checkIn'] ??
-                data['startDate']);
-            final checkOut = _asDate(data['checkOutDate'] ??
-                data['checkOut'] ??
-                data['endDate']);
-            if (checkIn != null && checkOut != null) {
-              var cursor = DateTime(
-                  checkIn.year, checkIn.month, checkIn.day);
-              final end = DateTime(
-                  checkOut.year, checkOut.month, checkOut.day);
-              while (cursor.isBefore(end)) {
-                final keyDate = DateTime(
-                    cursor.year, cursor.month, cursor.day);
-                bookingCounts[keyDate] =
-                    (bookingCounts[keyDate] ?? 0) + 1;
-                cursor =
-                    cursor.add(const Duration(days: 1));
+          // Normalize to midnight (timezone guard); Timestamps handled via _asDate/.toDate()
+          final checkIn = _asDate(
+              data['checkInDate'] ?? data['checkIn'] ?? data['startDate']);
+          final checkOut = _asDate(data['checkOutDate'] ??
+              data['checkOut'] ??
+              data['endDate']);
+          if (checkIn != null && checkOut != null) {
+            // Primary path: use range [checkIn, checkOut) when check-out is after check-in.
+            final startDay = _dateOnly(checkIn);
+            final endDay = _dateOnly(checkOut);
+            if (endDay.isAfter(startDay)) {
+              var cursor = startDay;
+              while (cursor.isBefore(endDay)) {
+                final currentDate = _dateOnly(cursor);
+                dailyCounts[currentDate] =
+                    (dailyCounts[currentDate] ?? 0) + 1;
+                cursor = cursor.add(const Duration(days: 1));
               }
+            } else {
+              // Fallback: some 1-night bookings save checkIn == checkOut.
+              // In that case, at least mark the check-in day as occupied.
+              final currentDate = _dateOnly(checkIn);
+              dailyCounts[currentDate] =
+                  (dailyCounts[currentDate] ?? 0) + 1;
             }
+          } else if (checkIn != null) {
+            // Last resort: if we only have a single checkIn date, mark that day.
+            final currentDate = _dateOnly(checkIn);
+            dailyCounts[currentDate] =
+                (dailyCounts[currentDate] ?? 0) + 1;
           }
         }
 
@@ -341,7 +343,7 @@ class _PerformanceDashboardState extends State<PerformanceDashboard> {
                                 _buildStatusCard(statusCounts),
                                 const SizedBox(height: 16),
                                 _buildOccupancyCard(
-                                    bookingCounts),
+                                    dailyCounts),
                                 const SizedBox(height: 16),
                                 _buildExpenseSummaryCard(
                                     totalExpenses),
@@ -385,7 +387,7 @@ class _PerformanceDashboardState extends State<PerformanceDashboard> {
                                     Expanded(
                                       flex: 3,
                                       child: _buildOccupancyCard(
-                                          bookingCounts),
+                                          dailyCounts),
                                     ),
                                   ],
                                 ),
@@ -440,7 +442,7 @@ class _PerformanceDashboardState extends State<PerformanceDashboard> {
             ),
             const SizedBox(height: 16),
             SizedBox(
-              height: 180,
+              height: 210,
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: revenueMonths.map((m) {
@@ -616,7 +618,7 @@ class _PerformanceDashboardState extends State<PerformanceDashboard> {
   }
 
   Widget _buildOccupancyCard(
-      Map<DateTime, int> bookingCounts) {
+      Map<DateTime, int> dailyCounts) {
     final teal = const Color(0xFF008080);
     final firstDay =
         DateTime(DateTime.now().year - 1, 1, 1);
@@ -699,32 +701,32 @@ class _PerformanceDashboardState extends State<PerformanceDashboard> {
               },
               calendarBuilders: CalendarBuilders(
                 markerBuilder: (context, day, events) {
-                  final key = DateTime(
-                      day.year, day.month, day.day);
-                  final count =
-                      bookingCounts[key] ?? 0;
-                  if (count <= 0) {
-                    return const SizedBox.shrink();
-                  }
+                  final key = _dateOnly(day);
+                  final count = dailyCounts[key] ?? 0;
+                  if (count <= 0) return const SizedBox.shrink();
                   return Align(
                     alignment: Alignment.topRight,
                     child: Container(
-                      margin: const EdgeInsets.only(
-                          top: 4, right: 4),
-                      padding:
-                          const EdgeInsets.symmetric(
-                              horizontal: 4, vertical: 1),
+                      margin: const EdgeInsets.only(top: 4, right: 4),
+                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
                       decoration: BoxDecoration(
                         color: teal,
-                        borderRadius:
-                            BorderRadius.circular(12),
+                        shape: BoxShape.circle,
+                        boxShadow: [
+                          BoxShadow(
+                            color: teal.withOpacity(0.4),
+                            blurRadius: 2,
+                            offset: const Offset(0, 1),
+                          ),
+                        ],
                       ),
                       child: Text(
                         '$count',
                         style: GoogleFonts.poppins(
-                            fontSize: 9,
-                            color: Colors.white,
-                            fontWeight: FontWeight.w600),
+                          fontSize: 9,
+                          color: Colors.white,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
                     ),
                   );

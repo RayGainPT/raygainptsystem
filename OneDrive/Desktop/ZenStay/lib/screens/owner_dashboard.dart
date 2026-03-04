@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'performance_dashboard.dart';
@@ -46,6 +48,7 @@ class _OwnerDashboardState extends State<OwnerDashboard>
   final TextEditingController holiday10Ctrl = TextEditingController();
   final TextEditingController holiday12Ctrl = TextEditingController();
   final TextEditingController holiday22Ctrl = TextEditingController();
+  final TextEditingController propertyLabelCtrl = TextEditingController();
   final TextEditingController gcashCtrl = TextEditingController();
   final TextEditingController mayaCtrl = TextEditingController();
   final TextEditingController bankDetailsCtrl = TextEditingController();
@@ -63,12 +66,42 @@ class _OwnerDashboardState extends State<OwnerDashboard>
   final TextEditingController weekend12Ctrl = TextEditingController();
   final TextEditingController weekend22Ctrl = TextEditingController();
 
-  List<QueryDocumentSnapshot<Map<String, dynamic>>> ownedProperties = [];
+  List<DocumentSnapshot<Map<String, dynamic>>> ownedProperties = [];
   String? currentPropertyId;
   bool _fetchCompleted = false;
+  bool _uploadingPhotos = false;
+  double _uploadPhotoProgress = 0.0;
   // staged holidays map: dateString -> { 'name': ..., '8h':..., '12h':..., '22h':... }
   final Map<String, Map<String, dynamic>> stagedHolidayRates = {};
   String? editingHolidayKey;
+
+  Future<void> _deletePropertyPhoto(String url) async {
+    final propId = _propId();
+    final slugText = slugController.text.trim().toLowerCase();
+    final String photoDocKey =
+        slugText.isNotEmpty ? slugText : propId;
+    if (photoDocKey.isEmpty) return;
+    try {
+      final docRef =
+          FirebaseFirestore.instance.collection('properties').doc(photoDocKey);
+      await docRef.update({
+        'images': FieldValue.arrayRemove([url]),
+        'propertyPhotos': FieldValue.arrayRemove([url]),
+        'photos': FieldValue.arrayRemove([url]),
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Photo removed')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to remove photo: $e')),
+        );
+      }
+    }
+  }
 
   @override
   void initState() {
@@ -144,6 +177,7 @@ class _OwnerDashboardState extends State<OwnerDashboard>
                       'ownerId': uid,
                       'slug': slug,
                       'name': name.isNotEmpty ? name : slug,
+                      'propertyLabel': name.isNotEmpty ? name : slug,
                       'location': location,
                       'createdAt': FieldValue.serverTimestamp(),
                     }, SetOptions(merge: true));
@@ -168,42 +202,101 @@ class _OwnerDashboardState extends State<OwnerDashboard>
 
   /// Fetches properties for the current user and locks the first as selected.
   /// Firestore field used: ownerId (matches property model and pdf_service).
+  /// Always sets _fetchCompleted so the UI never hangs on "Fetching your properties...".
   Future<void> _fetchOwnedProperties() async {
-    print('CURRENT USER UID: ${FirebaseAuth.instance.currentUser?.uid}');
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    print('CURRENT USER UID: $uid');
 
-    final snapshot = await FirebaseFirestore.instance
-        .collection('properties')
-        .where('ownerId', isEqualTo: FirebaseAuth.instance.currentUser?.uid)
-        .get();
+    if (uid == null || uid.isEmpty) {
+      if (mounted) setState(() => _fetchCompleted = true);
+      return;
+    }
 
-    if (snapshot.docs.isNotEmpty) {
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('properties')
+          .where('ownerId', isEqualTo: uid)
+          .get()
+          .timeout(const Duration(seconds: 15),
+              onTimeout: () => throw TimeoutException('Properties load timed out'));
+
+      if (!mounted) return;
+      if (snapshot.docs.isEmpty) {
+        print('DEBUG: No properties found for this user UID.');
+        setState(() => _fetchCompleted = true);
+        return;
+      }
+
       final docs = snapshot.docs
-          .cast<QueryDocumentSnapshot<Map<String, dynamic>>>()
+          .cast<DocumentSnapshot<Map<String, dynamic>>>()
           .toList();
 
-      QueryDocumentSnapshot<Map<String, dynamic>>? primary;
+      DocumentSnapshot<Map<String, dynamic>>? primary;
       for (final d in docs) {
         if (d.id == 'euroescape') {
           primary = d;
-        } else {
-          print('WARNING: Duplicate property found: ${d.id}');
+          break;
         }
       }
       primary ??= docs.first;
       final chosen = primary;
       final firstId = chosen.id;
-      if (!mounted) return;
+
       setState(() {
         ownedProperties = docs;
         currentPropertyId = firstId;
-        _hydratePropertyControllers(chosen.data(), fallbackId: firstId);
+        _hydratePropertyControllers(chosen.data() ?? {}, fallbackId: firstId);
         _fetchCompleted = true;
       });
       print('Active Property ID: $currentPropertyId');
       await _loadPropertyData(firstId);
-    } else {
-      print('DEBUG: No properties found for this user UID.');
-      if (mounted) setState(() => _fetchCompleted = true);
+    } catch (e, st) {
+      print('_fetchOwnedProperties error: $e');
+      print(st);
+      if (mounted) {
+        // Fallback: if URL has a slug (e.g. /dashboard/euroescape), try opening that property by doc id
+        final opened = await _tryOpenPropertyBySlug(uid);
+        setState(() => _fetchCompleted = true);
+        if (!opened) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text('Could not load properties. Check connection or Firestore rules.'),
+              action: SnackBarAction(
+                label: 'Retry',
+                onPressed: _fetchOwnedProperties,
+              ),
+            ),
+          );
+        }
+      }
+    }
+  }
+
+  /// When the list query fails or returns empty, try to open the property by slug from the URL.
+  /// Returns true if we opened a property so the dashboard can show.
+  Future<bool> _tryOpenPropertyBySlug(String uid) async {
+    final slug = widget.slug?.trim();
+    if (slug == null || slug.isEmpty) return false;
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('properties')
+          .doc(slug)
+          .get()
+          .timeout(const Duration(seconds: 10));
+      if (!doc.exists || doc.data() == null) return false;
+      final data = doc.data()!;
+      final docOwnerId = data['ownerId']?.toString();
+      if (docOwnerId != uid) return false;
+      if (!mounted) return true;
+      setState(() {
+        ownedProperties = [doc];
+        currentPropertyId = slug;
+        _hydratePropertyControllers(data, fallbackId: slug);
+      });
+      _loadPropertyData(slug);
+      return true;
+    } catch (_) {
+      return false;
     }
   }
 
@@ -281,14 +374,34 @@ class _OwnerDashboardState extends State<OwnerDashboard>
     super.dispose();
   }
 
-  String _propId() => slugController.text.trim().isNotEmpty
-      ? slugController.text.trim().toLowerCase()
-      : (currentPropertyId ?? 'euroescape');
+  String _propId() {
+    if (currentPropertyId != null && currentPropertyId!.isNotEmpty) {
+      // Always prefer the actual Firestore document id for lookups
+      return currentPropertyId!;
+    }
+    final slugText = slugController.text.trim();
+    if (slugText.isNotEmpty) {
+      return slugText.toLowerCase();
+    }
+    // Fallback for very first load / legacy case
+    return 'euroescape';
+  }
+
+  /// Key used for guest-facing data: booking page and checkout use the slug.
+  /// Use this for Live Bookings query, Pricing Manager, and Property Settings
+  /// so the dashboard and booking page see the same property document.
+  String _guestPropertyKey() {
+    final slug = slugController.text.trim().toLowerCase();
+    if (slug.isNotEmpty) return slug;
+    return _propId();
+  }
 
   void _hydratePropertyControllers(Map<String, dynamic> data,
       {String? fallbackId}) {
     slugController.text =
         (data['slug'] as String?) ?? fallbackId ?? slugController.text;
+    propertyLabelCtrl.text =
+        (data['propertyLabel'] as String?) ?? (data['name'] as String?) ?? '';
     gcashCtrl.text = (data['gcashNumber'] as String?) ?? '';
     mayaCtrl.text = (data['mayaNumber'] as String?) ?? '';
     bankDetailsCtrl.text = (data['bankDetails'] as String?) ?? '';
@@ -386,18 +499,19 @@ class _OwnerDashboardState extends State<OwnerDashboard>
                 value: currentPropertyId ?? ownedProperties.first.id,
                 items: ownedProperties.map((d) {
                   final m = d.data();
-                  final label =
-                      (m['name'] as String?) ?? (m['slug'] as String?) ?? d.id;
+                  final label = (m?['name'] as String?) ??
+                      (m?['propertyLabel'] as String?) ??
+                      (m?['slug'] as String?) ??
+                      d.id;
                   return DropdownMenuItem(value: d.id, child: Text(label));
                 }).toList(),
                 onChanged: (v) async {
                   if (v == null) return;
                   final sel = ownedProperties.firstWhere((d) => d.id == v,
                       orElse: () => ownedProperties.first);
-                  final data = sel.data();
                   setState(() {
                     currentPropertyId = sel.id;
-                    _hydratePropertyControllers(data, fallbackId: sel.id);
+                    _hydratePropertyControllers(sel.data() ?? {}, fallbackId: sel.id);
                     print('Active Property ID: $currentPropertyId');
                   });
                   await _loadPropertyData(sel.id);
@@ -599,14 +713,15 @@ class _OwnerDashboardState extends State<OwnerDashboard>
           child: Text('Select a property to view bookings',
               style: GoogleFonts.poppins()));
     }
-    final propId = _propId();
+    // Use slug so we match bookings (checkout saves propertySlug from URL slug)
+    final guestKey = _guestPropertyKey();
 
     // Query Strip: no orderBy so docs missing createdAt still appear
     // Field Match: checkout writes propertySlug; use same field here
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: FirebaseFirestore.instance
           .collection('bookings')
-          .where('propertySlug', isEqualTo: propId)
+          .where('propertySlug', isEqualTo: guestKey)
           .snapshots(),
       builder: (context, snapshot) {
         debugPrint('Bookings found: ${snapshot.data?.docs.length}');
@@ -639,22 +754,36 @@ class _OwnerDashboardState extends State<OwnerDashboard>
             final b = d.data();
             final checkIn = _asDate(
                 b['checkInDate'] ?? b['checkIn'] ?? b['startDate']);
-            final checkOut = _asDate(b['checkOutDate'] ??
-                b['checkOut'] ??
-                b['endDate']);
-            if (checkIn == null || checkOut == null) return false;
-            var cursor = DateTime(
-                checkIn.year, checkIn.month, checkIn.day);
-            final end = DateTime(
-                checkOut.year, checkOut.month, checkOut.day);
-            while (cursor.isBefore(end)) {
-              if (cursor.year == filterDate.year &&
-                  cursor.month == filterDate.month &&
-                  cursor.day == filterDate.day) {
-                return true;
+            final checkOut = _asDate(
+                b['checkOutDate'] ?? b['checkOut'] ?? b['endDate']);
+            if (checkIn == null && checkOut == null) return false;
+
+            final startDay = checkIn != null
+                ? DateTime(checkIn.year, checkIn.month, checkIn.day)
+                : null;
+            final endDay = checkOut != null
+                ? DateTime(checkOut.year, checkOut.month, checkOut.day)
+                : null;
+
+            // If we only know a single day (or check-in == check-out), treat that day as occupied.
+            if (startDay != null &&
+                (endDay == null || !endDay.isAfter(startDay))) {
+              return startDay.year == filterDate.year &&
+                  startDay.month == filterDate.month &&
+                  startDay.day == filterDate.day;
+            }
+
+            // Normal multi-day range: [startDay, endDay)
+            if (startDay != null && endDay != null) {
+              var cursor = startDay;
+              while (cursor.isBefore(endDay)) {
+                if (cursor.year == filterDate.year &&
+                    cursor.month == filterDate.month &&
+                    cursor.day == filterDate.day) {
+                  return true;
+                }
+                cursor = cursor.add(const Duration(days: 1));
               }
-              cursor =
-                  cursor.add(const Duration(days: 1));
             }
             return false;
           }).toList();
@@ -943,8 +1072,14 @@ class _OwnerDashboardState extends State<OwnerDashboard>
 
   Widget _propertySettings() {
     final propId = _propId();
-    final docRef =
-        FirebaseFirestore.instance.collection('properties').doc(propId);
+    final slugText = slugController.text.trim().toLowerCase();
+    // For assets like photos that guests see, prefer the slug-based document
+    // so Property Settings stays in sync with the public booking page.
+    final String photoDocKey =
+        slugText.isNotEmpty ? slugText : propId;
+    final docRef = FirebaseFirestore.instance
+        .collection('properties')
+        .doc(photoDocKey);
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
       stream: docRef.snapshots(),
       builder: (context, snap) {
@@ -960,12 +1095,20 @@ class _OwnerDashboardState extends State<OwnerDashboard>
           }
         }
 
-        return Padding(
+        return SingleChildScrollView(
           padding: const EdgeInsets.all(16.0),
-          child:
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
             Text('Property: $propId',
                 style: GoogleFonts.poppins(fontWeight: FontWeight.w700)),
+            const SizedBox(height: 12),
+            TextField(
+                controller: propertyLabelCtrl,
+                decoration: const InputDecoration(
+                    border: OutlineInputBorder(),
+                    labelText: 'Property Label (shown on booking page)',
+                    hintText: 'e.g. Baguio Staycation')),
             const SizedBox(height: 12),
             TextField(
                 controller: slugController,
@@ -994,53 +1137,90 @@ class _OwnerDashboardState extends State<OwnerDashboard>
             Text('Property Photos',
                 style: GoogleFonts.poppins(fontWeight: FontWeight.w600)),
             const SizedBox(height: 8),
+            if (_uploadingPhotos) ...[
+              LinearProgressIndicator(value: _uploadPhotoProgress),
+              const SizedBox(height: 8),
+              Text('Uploading photos…',
+                  style: GoogleFonts.poppins(color: Colors.grey.shade700)),
+              const SizedBox(height: 12),
+            ],
             Row(
               children: [
                 ElevatedButton.icon(
-                  onPressed: () async {
-                    final propId = _propId();
-                    if (propId.isEmpty) return;
-                    try {
-                      final result = await FilePicker.platform.pickFiles(
-                        allowMultiple: true,
-                        type: FileType.image,
-                        withData: true,
-                      );
-                      if (result == null || result.files.isEmpty) return;
-                      final storage = FirebaseStorage.instance;
-                      final List<String> newUrls = [];
-                      for (final file in result.files) {
-                        final bytes = file.bytes;
-                        if (bytes == null) continue;
-                        final filename =
-                            '${DateTime.now().millisecondsSinceEpoch}_${file.name}';
-                        final ref = storage
-                            .ref()
-                            .child('properties')
-                            .child(propId)
-                            .child('media')
-                            .child(filename);
-                        await ref.putData(bytes);
-                        final url = await ref.getDownloadURL();
-                        newUrls.add(url);
-                      }
-                      if (newUrls.isNotEmpty) {
-                        await docRef.set({
-                          'images': FieldValue.arrayUnion(newUrls),
-                        }, SetOptions(merge: true));
-                        if (mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                  content: Text('Photos uploaded.')));
-                        }
-                      }
-                    } catch (e) {
-                      if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                            content: Text('Upload failed: $e')));
-                      }
-                    }
-                  },
+                  onPressed: _uploadingPhotos
+                      ? null
+                      : () async {
+                          final propId = _propId();
+                          if (propId.isEmpty) return;
+                          try {
+                            final result = await FilePicker.platform.pickFiles(
+                              allowMultiple: true,
+                              // Restrict to formats Flutter web renders reliably
+                              type: FileType.custom,
+                              allowedExtensions: ['jpg', 'jpeg', 'png', 'webp'],
+                              withData: true,
+                            );
+                            if (result == null || result.files.isEmpty) return;
+                            final storage = FirebaseStorage.instance;
+                            final List<String> newUrls = [];
+                            final files = result.files
+                                .where((f) => f.bytes != null)
+                                .toList();
+                            if (files.isEmpty) return;
+                            if (mounted) {
+                              setState(() {
+                                _uploadingPhotos = true;
+                                _uploadPhotoProgress = 0.0;
+                              });
+                            }
+                            for (int i = 0; i < files.length; i++) {
+                              final file = files[i];
+                              final bytes = file.bytes!;
+                              final filename =
+                                  '${DateTime.now().millisecondsSinceEpoch}_${file.name}';
+                              final ref = storage
+                                  .ref()
+                                  .child('properties')
+                                  .child(propId)
+                                  .child('media')
+                                  .child(filename);
+                              await ref.putData(bytes);
+                              final url = await ref.getDownloadURL();
+                              newUrls.add(url);
+                              if (mounted) {
+                                setState(() {
+                                  _uploadPhotoProgress = (i + 1) / files.length;
+                                });
+                              }
+                            }
+                            if (newUrls.isNotEmpty) {
+                              await docRef.set({
+                                'images': FieldValue.arrayUnion(newUrls),
+                                'propertyPhotos': FieldValue.arrayUnion(newUrls),
+                              }, SetOptions(merge: true));
+                              if (mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                        content: Text('Photos uploaded.')));
+                              }
+                            }
+                            if (mounted) {
+                              setState(() {
+                                _uploadingPhotos = false;
+                                _uploadPhotoProgress = 0.0;
+                              });
+                            }
+                          } catch (e) {
+                            if (mounted) {
+                              setState(() {
+                                _uploadingPhotos = false;
+                                _uploadPhotoProgress = 0.0;
+                              });
+                              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                                  content: Text('Upload failed: $e')));
+                            }
+                          }
+                        },
                   icon: const Icon(Icons.photo_library),
                   label: const Text('Upload Property Photos'),
                 ),
@@ -1054,21 +1234,52 @@ class _OwnerDashboardState extends State<OwnerDashboard>
                   scrollDirection: Axis.horizontal,
                   itemCount: imageUrls.length,
                   separatorBuilder: (_, __) => const SizedBox(width: 8),
-                  itemBuilder: (context, index) => ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: Image.network(
-                      imageUrls[index],
+                  itemBuilder: (context, index) {
+                    final url = imageUrls[index];
+                    return SizedBox(
                       width: 120,
                       height: 90,
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => Container(
-                        width: 120,
-                        height: 90,
-                        color: Colors.grey.shade200,
-                        child: const Icon(Icons.broken_image),
+                      child: Stack(
+                        children: [
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: Image.network(
+                              url,
+                              width: 120,
+                              height: 90,
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, __, ___) => Container(
+                                width: 120,
+                                height: 90,
+                                color: Colors.grey.shade200,
+                                child: const Icon(Icons.broken_image),
+                              ),
+                            ),
+                          ),
+                          Positioned(
+                            top: 4,
+                            right: 4,
+                            child: Material(
+                              color: Colors.black54,
+                              shape: const CircleBorder(),
+                              child: InkWell(
+                                customBorder: const CircleBorder(),
+                                onTap: () => _deletePropertyPhoto(url),
+                                child: const Padding(
+                                  padding: EdgeInsets.all(4.0),
+                                  child: Icon(
+                                    Icons.close,
+                                    size: 16,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
-                    ),
-                  ),
+                    );
+                  },
                 ),
               )
             else
@@ -1080,6 +1291,7 @@ class _OwnerDashboardState extends State<OwnerDashboard>
                   onPressed: () async {
                     try {
                       await docRef.set({
+                        'propertyLabel': propertyLabelCtrl.text.trim(),
                         'gcashNumber': gcashCtrl.text.trim(),
                         'mayaNumber': mayaCtrl.text.trim(),
                         'bankDetails': bankDetailsCtrl.text.trim(),
@@ -1183,9 +1395,9 @@ class _OwnerDashboardState extends State<OwnerDashboard>
   Future<void> _saveThemeToEuroescape() async {
     setState(() => isSavingTheme = true);
     try {
-      final propId = _propId();
+      final guestKey = _guestPropertyKey();
       final docRef =
-          FirebaseFirestore.instance.collection('properties').doc(propId);
+          FirebaseFirestore.instance.collection('properties').doc(guestKey);
       await docRef.update({
         'primaryColor': ColorUtils.toHex(primaryColor),
         'secondaryColor': ColorUtils.toHex(secondaryColor)
@@ -1248,11 +1460,11 @@ class _OwnerDashboardState extends State<OwnerDashboard>
     });
 
     try {
-      final propId = _propId();
-      if (propId.isNotEmpty) {
+      final guestKey = _guestPropertyKey();
+      if (guestKey.isNotEmpty) {
         final docRef = FirebaseFirestore.instance
             .collection('properties')
-            .doc(propId);
+            .doc(guestKey);
         await docRef.update({
           'holidayRates.$key': FieldValue.delete(),
           'holidayDates': FieldValue.arrayRemove([key]),
@@ -1269,6 +1481,72 @@ class _OwnerDashboardState extends State<OwnerDashboard>
           SnackBar(content: Text('Failed to remove holiday: $e')),
         );
       }
+    }
+  }
+
+  /// Persists current weekday/weekend rate maps to Firestore (prop + slug doc).
+  Future<void> _persistStandardRates() async {
+    final propId = _propId();
+    final guestKey = _guestPropertyKey();
+    final weekday = <String, dynamic>{};
+    weekdayControllers.forEach((k, c) {
+      final v = double.tryParse(c.text.replaceAll(',', '')) ?? 0.0;
+      weekday[k] = v;
+    });
+    final weekend = <String, dynamic>{};
+    weekendControllers.forEach((k, c) {
+      final v = double.tryParse(c.text.replaceAll(',', '')) ?? 0.0;
+      weekend[k] = v;
+    });
+    final payload = <String, dynamic>{
+      'weekdayRates': weekday,
+      'weekendRates': weekend,
+    };
+    try {
+      final docRef = FirebaseFirestore.instance
+          .collection('properties')
+          .doc(propId);
+      await docRef.set(payload, SetOptions(merge: true));
+      if (guestKey != propId) {
+        final slugRef = FirebaseFirestore.instance
+            .collection('properties')
+            .doc(guestKey);
+        await slugRef.set(payload, SetOptions(merge: true));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to save rates: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _deleteWeekdayRate(String key) async {
+    setState(() {
+      if (editingWeekdayKey == key) editingWeekdayKey = null;
+      final old = weekdayControllers.remove(key);
+      old?.dispose();
+    });
+    await _persistStandardRates();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Weekday rate removed')),
+      );
+    }
+  }
+
+  Future<void> _deleteWeekendRate(String key) async {
+    setState(() {
+      if (editingWeekendKey == key) editingWeekendKey = null;
+      final old = weekendControllers.remove(key);
+      old?.dispose();
+    });
+    await _persistStandardRates();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Weekend rate removed')),
+      );
     }
   }
 
@@ -1294,6 +1572,7 @@ class _OwnerDashboardState extends State<OwnerDashboard>
   }
 
   Widget _pricingManager() {
+    // Read from current property doc so existing rates (e.g. 57I...) show in form
     final propId = _propId();
     final docRef =
         FirebaseFirestore.instance.collection('properties').doc(propId);
@@ -1519,14 +1798,7 @@ class _OwnerDashboardState extends State<OwnerDashboard>
                                                                         Icons
                                                                             .delete),
                                                                     onPressed:
-                                                                        () {
-                                                                      setState(
-                                                                          () {
-                                                                        final old =
-                                                                            weekdayControllers.remove(e.key);
-                                                                        old?.dispose();
-                                                                      });
-                                                                    })
+                                                                        () => _deleteWeekdayRate(e.key))
                                                               ]),
                                                         ),
                                                       ))
@@ -1656,14 +1928,7 @@ class _OwnerDashboardState extends State<OwnerDashboard>
                                                                         Icons
                                                                             .delete),
                                                                     onPressed:
-                                                                        () {
-                                                                      setState(
-                                                                          () {
-                                                                        final old =
-                                                                            weekendControllers.remove(e.key);
-                                                                        old?.dispose();
-                                                                      });
-                                                                    })
+                                                                        () => _deleteWeekendRate(e.key))
                                                               ]),
                                                         ),
                                                       ))
@@ -1929,7 +2194,7 @@ class _OwnerDashboardState extends State<OwnerDashboard>
                                         payload;
                                   });
                                   try {
-                                    await docRef.set({
+                                    final payload = <String, dynamic>{
                                       'weekdayRates': weekday,
                                       'weekendRates': weekend,
                                       'maxBaseGuests': int.tryParse(
@@ -1952,7 +2217,16 @@ class _OwnerDashboardState extends State<OwnerDashboard>
                                       'holidayDates': FieldValue.arrayUnion(
                                           stagedHolidayRates.keys.toList()),
                                       ...holidayRateUpdates,
-                                    }, SetOptions(merge: true));
+                                    };
+                                    await docRef.set(payload, SetOptions(merge: true));
+                                    // Also write to slug doc so booking page (which uses slug) sees the same rates
+                                    final guestKey = _guestPropertyKey();
+                                    if (guestKey != propId) {
+                                      final slugRef = FirebaseFirestore.instance
+                                          .collection('properties')
+                                          .doc(guestKey);
+                                      await slugRef.set(payload, SetOptions(merge: true));
+                                    }
                                     if (mounted)
                                       ScaffoldMessenger.of(context)
                                           .showSnackBar(const SnackBar(
@@ -2068,7 +2342,7 @@ class _OwnerDashboardState extends State<OwnerDashboard>
     switch (_selectedIndex) {
       case 0:
         content = PerformanceDashboard(
-          propertyId: _propId(),
+          propertyId: _guestPropertyKey(),
           onDateSelected: (selected) {
             setState(() {
               _bookingFilterDate = selected;

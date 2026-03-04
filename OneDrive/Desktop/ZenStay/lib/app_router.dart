@@ -7,6 +7,7 @@ import 'screens/booking_screen.dart';
 import 'screens/owner_dashboard.dart';
 import 'screens/login_screen.dart';
 import 'screens/signup_page.dart';
+import 'screens/authorization_form_screen.dart';
 
 class FirebaseAuthChangeNotifier extends ChangeNotifier {
   late final StreamSubscription<User?> _sub;
@@ -39,6 +40,10 @@ final GoRouter appRouter = GoRouter(
     GoRoute(
       path: '/signup',
       builder: (context, state) => const SignupPage(),
+    ),
+    GoRoute(
+      path: '/authorization',
+      builder: (context, state) => const AuthorizationFormScreen(),
     ),
     GoRoute(
       path: '/dashboard',
