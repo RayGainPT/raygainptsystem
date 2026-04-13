@@ -675,7 +675,11 @@
 </head>
 <body class="dashboard-page">
     <div class="dashboard-container">
-        <aside class="sidebar">
+        <button id="mobileSidebarToggle" class="mobile-sidebar-toggle" type="button" aria-label="Open menu" aria-controls="dashboardSidebar" aria-expanded="false">
+            ☰
+        </button>
+        <div id="mobileSidebarOverlay" class="mobile-sidebar-overlay" aria-hidden="true"></div>
+        <aside class="sidebar" id="dashboardSidebar" aria-label="Dashboard navigation">
             <h2 class="menu-title">
                 <span class="menu-brand menu-brand-logo-wrap"><img id="sidebarMenuLogo" class="menu-brand-logo" src="images/RayGain Logo.png" alt="RayGain Logo"></span>
                 <span class="menu-title-text">
@@ -3519,6 +3523,44 @@
             event.preventDefault();
         }
     }, true);
+
+    // Mobile sidebar drawer
+    (function setupMobileSidebarDrawer() {
+        const toggleBtn = document.getElementById('mobileSidebarToggle');
+        const overlay = document.getElementById('mobileSidebarOverlay');
+        const sidebar = document.getElementById('dashboardSidebar');
+        if (!toggleBtn || !overlay || !sidebar) return;
+
+        const setOpen = (isOpen) => {
+            document.body.classList.toggle('is-sidebar-open', isOpen);
+            toggleBtn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+            overlay.setAttribute('aria-hidden', isOpen ? 'false' : 'true');
+            if (isOpen) {
+                // Focus the first nav item for accessibility
+                const firstLink = sidebar.querySelector('a,button');
+                if (firstLink) firstLink.focus({ preventScroll: true });
+            } else {
+                toggleBtn.focus({ preventScroll: true });
+            }
+        };
+
+        toggleBtn.addEventListener('click', () => setOpen(!document.body.classList.contains('is-sidebar-open')));
+        overlay.addEventListener('click', () => setOpen(false));
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') setOpen(false);
+        });
+
+        // Close drawer when a nav link is chosen (mobile only)
+        sidebar.addEventListener('click', (e) => {
+            const target = e.target.closest('a[href],button');
+            if (!target) return;
+            if (window.innerWidth <= 900) setOpen(false);
+        });
+
+        window.addEventListener('resize', () => {
+            if (window.innerWidth > 900) setOpen(false);
+        });
+    })();
 
     // Sidebar navigation
     document.getElementById('dashboardBtn').onclick = (e) => {

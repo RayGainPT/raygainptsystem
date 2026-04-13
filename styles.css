@@ -1046,11 +1046,91 @@ header h1 {
 }
 
 .sub-condition-list li::before {
-    content: 'â€“';
+    content: '–';
     position: absolute;
     left: 0;
     color: #a5eaea;
     font-weight: 600;
+}
+
+/* Mobile-first header + services polish for index/about pages */
+@media (max-width: 520px) {
+    .top-header {
+        position: sticky;
+        top: 0;
+        left: 0;
+        right: 0;
+        padding: 10px 12px;
+        gap: 10px;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        background: rgba(17, 110, 116, 0.28);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.22);
+    }
+
+    .header-left {
+        gap: 10px;
+        min-width: 0;
+    }
+
+    .header-logo-img {
+        width: 56px;
+        height: 56px;
+    }
+
+    .header-logo-text {
+        font-size: 1.2rem;
+        text-shadow: none;
+    }
+
+    .header-nav {
+        width: 100%;
+        justify-content: flex-start;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .header-nav-link {
+        font-size: 0.95rem;
+        padding: 8px 12px;
+        background: rgba(255, 255, 255, 0.12);
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        text-shadow: none;
+    }
+
+    .inquiries-header {
+        padding-top: 96px; /* leave room for sticky header */
+    }
+
+    .hero-action-btn {
+        width: 100%;
+        max-width: 360px;
+    }
+
+    .conditions-grid {
+        margin-top: 20px;
+    }
+
+    .condition-list > li {
+        padding-left: 18px;
+        word-break: break-word;
+    }
+
+    .condition-list > li::before {
+        left: 2px;
+    }
+
+    .sub-condition-list {
+        padding-left: 14px;
+    }
+
+    .sub-condition-list li {
+        padding-left: 14px;
+        word-break: break-word;
+    }
 }
 
 .photo-story-section {
@@ -2956,6 +3036,117 @@ body.dashboard-page .archive-section > div[style*="background:#eef7f8"] {
     body.dashboard-page .archive-section table {
         width: max-content;
         min-width: 720px;
+    }
+}
+
+/* Dashboard mobile drawer + component responsiveness */
+@media (max-width: 900px) {
+    body.dashboard-page .dashboard-container {
+        position: relative;
+    }
+
+    body.dashboard-page .mobile-sidebar-toggle {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        position: fixed;
+        top: 12px;
+        left: 12px;
+        z-index: 12050;
+        width: 44px;
+        height: 44px;
+        border-radius: 12px;
+        border: 1px solid rgba(13, 44, 62, 0.15);
+        background: rgba(255, 255, 255, 0.92);
+        color: #1f5560;
+        font-size: 1.35rem;
+        font-weight: 900;
+        box-shadow: 0 10px 22px rgba(13, 44, 62, 0.16);
+        cursor: pointer;
+    }
+
+    body.dashboard-page .mobile-sidebar-overlay {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(5, 24, 28, 0.55);
+        z-index: 12040;
+    }
+
+    body.dashboard-page.is-sidebar-open .mobile-sidebar-overlay {
+        display: block;
+    }
+
+    body.dashboard-page .sidebar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        width: min(86vw, 320px);
+        transform: translateX(-110%);
+        transition: transform 0.22s ease;
+        z-index: 12045;
+        overflow-y: auto;
+        border-right: 1px solid rgba(255,255,255,0.25);
+    }
+
+    body.dashboard-page.is-sidebar-open .sidebar {
+        transform: translateX(0);
+    }
+
+    body.dashboard-page .dashboard-main {
+        padding-top: 64px; /* room for hamburger */
+    }
+
+    /* Make action rows wrap nicely */
+    body.dashboard-page .calendar-controls {
+        flex-wrap: wrap;
+        gap: 10px;
+    }
+
+    body.dashboard-page .calendar-actions-stack {
+        width: 100%;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        justify-content: flex-start;
+    }
+
+    body.dashboard-page .calendar-actions-stack .btn {
+        flex: 1 1 220px;
+    }
+
+    /* Modals: full width on mobile */
+    body.dashboard-page .modal-content,
+    body.dashboard-page .modal .modal-content {
+        width: min(96vw, 980px);
+        max-width: 96vw !important;
+        max-height: 92vh;
+        overflow: auto;
+    }
+
+    /* Inputs/selects: prevent overflow */
+    body.dashboard-page input,
+    body.dashboard-page select,
+    body.dashboard-page textarea {
+        max-width: 100%;
+    }
+}
+
+@media (max-width: 520px) {
+    body.dashboard-page .dashboard-main {
+        padding-left: 12px;
+        padding-right: 12px;
+    }
+
+    body.dashboard-page h2 {
+        font-size: 1.25rem !important;
+    }
+
+    /* Charts: keep within viewport */
+    body.dashboard-page canvas {
+        max-width: 100% !important;
+        height: auto !important;
     }
 }
 
