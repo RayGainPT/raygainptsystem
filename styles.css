@@ -3040,6 +3040,12 @@ body.dashboard-page .archive-section > div[style*="background:#eef7f8"] {
 }
 
 /* Dashboard mobile drawer + component responsiveness */
+/* Default: hide hamburger + overlay on desktop */
+body.dashboard-page .mobile-sidebar-toggle,
+body.dashboard-page .mobile-sidebar-overlay {
+    display: none;
+}
+
 @media (max-width: 900px) {
     body.dashboard-page .dashboard-container {
         position: relative;
@@ -3834,6 +3840,26 @@ body.login-bg::before {
             gap: 8px;
             margin-bottom: 12px;
         }
+        /* Calendar nav arrows (match sidebar teal) */
+        #prevMonth.btn,
+        #nextMonth.btn {
+            background: #2b999f;
+            color: #ffffff;
+            border: none;
+            border-radius: 10px;
+            font-weight: 900;
+            height: 40px;
+            min-width: 44px;
+            box-shadow: 0 8px 18px rgba(13, 44, 62, 0.14);
+        }
+        #prevMonth.btn:hover,
+        #nextMonth.btn:hover {
+            background: #277f86;
+        }
+        #prevMonth.btn:active,
+        #nextMonth.btn:active {
+            background: #1f6f75;
+        }
         .calendar-actions-stack {
             display: flex;
             flex-direction: column;
@@ -3873,7 +3899,7 @@ body.login-bg::before {
         .weekday {
             font-size: 12px;
             font-weight: 700;
-            color: #2ecac8;
+            color: #2b999f;
             text-align: center;
             margin-bottom: 8px;
         }

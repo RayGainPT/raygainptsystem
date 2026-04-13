@@ -150,67 +150,8 @@
         return { fullName, html, text };
     }
 
-    async function sendBookingRequestEmail(bookingId) {
-        const recipientEmail = String(inquiryDraft?.gmail || inquiryDraft?.email || '').trim();
-        if (!recipientEmail) {
-            throw new Error('No Gmail found for this booking.');
-        }
-
-        const bookingMeta = {
-            serviceType: selectedService || inquiryDraft?.serviceType || inquiryDraft?.appointmentSessionType || 'Clinic',
-            dateLabel: selectedDate ? formatDate(selectedDate) : String(inquiryDraft?.appointmentDate || inquiryDraft?.date || 'N/A'),
-            timeLabel: selectedSlot || inquiryDraft?.appointmentTime || inquiryDraft?.time || 'N/A'
-        };
-        const message = buildBookingEmailMessage(bookingId, bookingMeta);
-        const subject = 'Appointment Request Received - RayGain Physiotherapy Clinic';
-        const templateParams = {
-            to_email: recipientEmail,
-            email: recipientEmail,
-            user_email: recipientEmail,
-            recipient_email: recipientEmail,
-            gmail: recipientEmail,
-            to: recipientEmail,
-            recipient: recipientEmail,
-            send_to: recipientEmail,
-            to_name: message.fullName,
-            name: message.fullName,
-            from_name: RAYGAIN_EMAIL_SENDER,
-            reply_to: RAYGAIN_EMAIL_SENDER,
-            subject: subject,
-            patient_name: message.fullName,
-            service_type: bookingMeta.serviceType,
-            booking_date: bookingMeta.dateLabel,
-            booking_time: bookingMeta.timeLabel,
-            booking_id: bookingId || 'N/A',
-            clinic_location: CLINIC_LOCATION,
-            clinic_contact: CLINIC_CONTACT_NUMBER,
-            clinic_email: RAYGAIN_EMAIL_SENDER,
-            message_html: message.html,
-            message_text: message.text,
-            message: message.text
-        };
-
-        // Prefer Firebase Extension: Trigger Email (writes to Firestore `mail` collection).
-        if (db && typeof db.collection === 'function') {
-            await db.collection('mail').add({
-                to: recipientEmail,
-                message: {
-                    subject: subject,
-                    text: message.text,
-                    html: message.html
-                },
-                createdAt: new Date().toISOString(),
-                source: 'booking-page',
-                bookingId: bookingId || null,
-                templateParams: templateParams
-            });
-            return { deliveryMode: 'firestore', recipientEmail: recipientEmail };
-        }
-
-        const mailtoUrl = `mailto:${encodeURIComponent(recipientEmail)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(message.text)}`;
-        window.open(mailtoUrl, '_blank');
-        return { deliveryMode: 'mailto', recipientEmail: recipientEmail };
-    }
+    // Email is intentionally NOT sent here.
+    // Emails are sent only when the therapist confirms the booking in the dashboard.
 
     function renderCalendar() {
         if (!calendarGrid || !calendarTitle) return;
@@ -454,27 +395,8 @@
                     await db.collection('inquiries').add(inquiryRecord);
                 }
 
-                let emailResult = null;
-                try {
-                    emailResult = await sendBookingRequestEmail(docRef.id);
-                } catch (emailError) {
-                    console.error('Booking email failed:', emailError);
-                    emailResult = { deliveryMode: 'failed', error: emailError };
-                }
-
-                if (emailResult && emailResult.deliveryMode === 'emailjs') {
-                    bookingMessage.textContent = `Booking saved successfully. Email sent to ${emailResult.recipientEmail}.`;
-                    bookingMessage.style.color = '#1d7b85';
-                } else if (emailResult && emailResult.deliveryMode === 'mailto') {
-                    bookingMessage.textContent = `Booking saved successfully. Your mail app opened for ${emailResult.recipientEmail}.`;
-                    bookingMessage.style.color = '#1d7b85';
-                } else if (emailResult && emailResult.error) {
-                    bookingMessage.textContent = `Booking saved successfully, but email could not be sent: ${emailResult.error.message || 'Unknown error'}`;
-                    bookingMessage.style.color = '#c24444';
-                } else {
-                    bookingMessage.textContent = 'Booking saved successfully.';
-                    bookingMessage.style.color = '#1d7b85';
-                }
+                bookingMessage.textContent = 'Booking saved successfully. Please wait for therapist confirmation.';
+                bookingMessage.style.color = '#1d7b85';
                 sessionStorage.removeItem('raygainInquiryDraft');
                 openSuccessModal();
             } catch (error) {

@@ -11,7 +11,6 @@
     const RAYGAIN_EMAIL_SENDER = 'RayGainPT@gmail.com';
     const CLINIC_CONTACT_NUMBER = '09972375959';
     const CLINIC_LOCATION = 'Butol Santiago Ilocos Sur Zone 3';
-    const db = window.raygainDb || null;
 
     function buildFullName(payload) {
         return [
@@ -22,46 +21,8 @@
         ].map(function (v) { return String(v || '').trim(); }).filter(Boolean).join(' ') || 'Valued Patient';
     }
 
-    function buildInquiryTemplateParams(payload) {
-        const recipientEmail = String(payload.gmail || payload.email || '').trim();
-        const fullName = buildFullName(payload);
-        const subject = 'Inquiry Received - RayGain Physiotherapy Clinic';
-        const messageText = [
-            `Dear ${fullName},`,
-            '',
-            'We received your inquiry at RayGain Physiotherapy Clinic.',
-            'Please continue to the booking page to choose your date and time slot.',
-            '',
-            'Contact:',
-            CLINIC_CONTACT_NUMBER,
-            RAYGAIN_EMAIL_SENDER
-        ].join('\n');
-
-        return {
-            recipientEmail: recipientEmail,
-            subject: subject,
-            html: `<p>${messageText.replace(/\n/g, '<br>')}</p>`,
-            text: messageText
-        };
-    }
-
-    async function queueInquiryReceiptEmail(payload) {
-        if (!db) throw new Error('Firestore is not available on this page.');
-        const prepared = buildInquiryTemplateParams(payload);
-        if (!prepared.recipientEmail) throw new Error('No Gmail provided for this inquiry.');
-
-        // Firebase Extension: Trigger Email listens to the `mail` collection by default.
-        await db.collection('mail').add({
-            to: prepared.recipientEmail,
-            message: {
-                subject: prepared.subject,
-                text: prepared.text,
-                html: prepared.html
-            },
-            createdAt: new Date().toISOString(),
-            source: 'inquire-page'
-        });
-    }
+    // Email is intentionally NOT sent here.
+    // Emails are sent only when the therapist confirms the booking in the dashboard.
 
     function getErrorEl(field) {
         if (!field || !field.parentElement) return null;
@@ -302,13 +263,6 @@
         message.textContent = 'Submitting inquiry...';
         message.style.color = '#1d7b85';
 
-        try {
-            await queueInquiryReceiptEmail(payload);
-            window.location.href = 'booking.html';
-        } catch (emailError) {
-            console.error('Inquiry email failed:', emailError);
-            message.textContent = `Inquiry saved but email failed: ${emailError && emailError.message ? emailError.message : 'Unknown error'}. Please try submit again.`;
-            message.style.color = '#c23636';
-        }
+        window.location.href = 'booking.html';
     });
 })();

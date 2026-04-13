@@ -3892,11 +3892,6 @@
                 return;
             }
 
-            if (!window.emailjs || !EMAILJS_SERVICE_ID || !EMAILJS_TEMPLATE_ID) {
-                showInfoModal('Bulk confirmation requires EmailJS to be configured first.', 'EmailJS Needed');
-                return;
-            }
-
             const confirmed = await showConfirmModal(`Send confirmation emails to ${pendingDocs.length} pending patient(s)?`, 'Confirm All Pending');
             if (!confirmed) return;
 
@@ -3912,11 +3907,12 @@
                         const inquiryData = doc.data() || {};
                         await sendInquiryConfirmationEmail(doc.id, inquiryData);
                         await db.collection('inquiries').doc(doc.id).update({
-                            confirmationStatus: 'sent',
+                            confirmationStatus: 'queued',
                             confirmationEmailSentAt: new Date().toISOString(),
                             confirmationSender: RAYGAIN_EMAIL_SENDER,
                             confirmationRecipient: getInquiryRecipientEmail(inquiryData) || '',
-                            confirmationBookingId: await resolveInquiryBookingId(doc.id, inquiryData)
+                            confirmationBookingId: await resolveInquiryBookingId(doc.id, inquiryData),
+                            confirmationProvider: 'firestore'
                         });
                         sentCount += 1;
                     } catch (sendError) {
@@ -5579,56 +5575,28 @@ const archiveSelectAllMap = {
     async function sendInquiryConfirmationEmail(inquiryId, inquiryData) {
         const recipientEmail = getInquiryRecipientEmail(inquiryData);
         if (!recipientEmail) {
-            throw new Error('No recipient Gmail found for this inquiry.');
+            throw new Error('No recipient Gmail found for this booking.');
         }
 
         const bookingId = await resolveInquiryBookingId(inquiryId, inquiryData);
         const message = buildInquiryConfirmationMessage(inquiryData, bookingId);
         const subject = 'Booking Confirmation - RayGain Physiotherapy Clinic';
-        const templateParams = {
-            to_email: recipientEmail,
-            email: recipientEmail,
-            user_email: recipientEmail,
-            recipient_email: recipientEmail,
-            gmail: recipientEmail,
+
+        // Firebase Extension: Trigger Email listens to the `mail` collection by default.
+        await db.collection('mail').add({
             to: recipientEmail,
-            recipient: recipientEmail,
-            send_to: recipientEmail,
-            to_name: message.fullName,
-            name: message.fullName,
-            from_name: RAYGAIN_EMAIL_SENDER,
-            reply_to: RAYGAIN_EMAIL_SENDER,
-            subject: subject,
-            patient_name: message.fullName,
-            service_type: message.bookingMeta.serviceType,
-            booking_date: message.bookingMeta.dateLabel,
-            booking_time: message.bookingMeta.timeLabel,
-            booking_id: bookingId || 'N/A',
-            clinic_location: CLINIC_LOCATION,
-            clinic_contact: CLINIC_CONTACT_NUMBER,
-            clinic_email: RAYGAIN_EMAIL_SENDER,
-            message_html: message.html,
-            message_text: message.text,
-            message: message.text
-        };
+            message: {
+                subject: subject,
+                text: message.text,
+                html: message.html
+            },
+            createdAt: new Date().toISOString(),
+            source: 'therapist-dashboard',
+            inquiryId: inquiryId,
+            bookingId: bookingId || null
+        });
 
-        if (window.emailjs && EMAILJS_SERVICE_ID && EMAILJS_TEMPLATE_ID) {
-            try {
-                const providerResult = await emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID, templateParams);
-                return {
-                    bookingId,
-                    deliveryMode: 'emailjs',
-                    providerStatus: providerResult && providerResult.status ? String(providerResult.status) : '',
-                    providerText: providerResult && providerResult.text ? String(providerResult.text) : ''
-                };
-            } catch (emailError) {
-                throw new Error(`EmailJS failed: ${formatInquiryEmailError(emailError)}`);
-            }
-        }
-
-        const mailtoUrl = `mailto:${encodeURIComponent(recipientEmail)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(message.text)}`;
-        window.open(mailtoUrl, '_blank');
-        return { bookingId, deliveryMode: 'mailto' };
+        return { bookingId, deliveryMode: 'firestore' };
     }
     const infoModal = document.getElementById('infoModal');
     const infoModalTitle = document.getElementById('infoModalTitle');
@@ -5768,7 +5736,7 @@ const archiveSelectAllMap = {
                     <td>${getInquiryCaseCondition(inquiry)}</td>
                     <td>${emergencyContactPhone}</td>
                     <td style="display:flex;gap:8px;flex-wrap:wrap;">
-                        <button data-id="${doc.id}" class="confirmInquiryBtn" style="padding:8px 16px;background:${confirmationSent ? '#90a4ae' : '#1976d2'};color:white;border:none;border-radius:4px;cursor:${confirmationSent ? 'not-allowed' : 'pointer'};font-size:0.9rem;" ${confirmationSent ? 'disabled' : ''}>${confirmationSent ? 'Email Sent' : 'Confirm Inquiry'}</button>
+                        <button data-id="${doc.id}" class="confirmInquiryBtn" style="padding:8px 16px;background:${confirmationSent ? '#90a4ae' : '#1976d2'};color:white;border:none;border-radius:4px;cursor:${confirmationSent ? 'not-allowed' : 'pointer'};font-size:0.9rem;" ${confirmationSent ? 'disabled' : ''}>${confirmationSent ? 'Email Sent' : 'Confirm Booking'}</button>
                         <button data-id="${doc.id}" class="addPatientBtn" style="padding:8px 16px;background:#4CAF50;color:white;border:none;border-radius:4px;cursor:pointer;font-size:0.9rem;">Add Patient</button>
                         <button onclick="deleteInquiry('${doc.id}')" style="padding:8px 16px;background:#f44336;color:white;border:none;border-radius:4px;cursor:pointer;font-size:0.9rem;">Delete</button>
                     </td>
@@ -5812,14 +5780,14 @@ const archiveSelectAllMap = {
                         const fullName = buildInquiryFullName(inquiryData);
                         const proceed = await showConfirmModal(
                             `Send booking confirmation to ${fullName}?\n\nRecipient: ${recipientEmail}`,
-                            'Confirm Inquiry'
+                            'Confirm Booking'
                         );
                         if (!proceed) return;
 
                         const sendResult = await sendInquiryConfirmationEmail(id, inquiryData);
                         const nowIso = new Date().toISOString();
                         await db.collection('inquiries').doc(id).update({
-                            confirmationStatus: sendResult.deliveryMode === 'emailjs' ? 'sent' : 'queued-mailto',
+                            confirmationStatus: sendResult.deliveryMode === 'firestore' ? 'queued' : String(sendResult.deliveryMode || 'queued'),
                             confirmationEmailSentAt: nowIso,
                             confirmationSender: RAYGAIN_EMAIL_SENDER,
                             confirmationBookingId: sendResult.bookingId || id,
@@ -5829,11 +5797,7 @@ const archiveSelectAllMap = {
                             confirmationProviderText: sendResult.providerText || ''
                         });
 
-                        if (sendResult.deliveryMode === 'emailjs') {
-                            showInfoModal(`Confirmation email sent to ${recipientEmail}.`);
-                        } else {
-                            showInfoModal('Mail app opened. Please click Send in Gmail to finish the confirmation email.');
-                        }
+                        showInfoModal(`Confirmation email queued for ${recipientEmail}.`);
 
                         await loadPendingInquiries();
                         try {
