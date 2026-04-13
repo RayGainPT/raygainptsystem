@@ -5537,6 +5537,8 @@ const archiveSelectAllMap = {
             * Date: ${escapeHtml(bookingMeta.dateLabel)}<br>
             * Time: ${escapeHtml(bookingMeta.timeLabel)}<br>
             * Booking ID: ${escapeHtml(bookingId || 'N/A')}</p>
+            <p><strong>Appointment Notice:</strong><br>
+            For clients who are located far from the clinic, advance notice is required regarding your expected arrival time so that your appointment can be properly considered and scheduled. Please inform us ahead of time if you anticipate any delay. Appointments may be cancelled if the patient does not arrive within 30 minutes of the scheduled time without prior notice.</p>
             <p><strong>Location:</strong><br>
             ${escapeHtml(CLINIC_LOCATION)}</p>
             <p>We look forward to seeing you to help you recover faster!</p>
@@ -5556,6 +5558,9 @@ const archiveSelectAllMap = {
             `* Date: ${bookingMeta.dateLabel}`,
             `* Time: ${bookingMeta.timeLabel}`,
             `* Booking ID: ${bookingId || 'N/A'}`,
+            '',
+            'Appointment Notice:',
+            'For clients who are located far from the clinic, advance notice is required regarding your expected arrival time so that your appointment can be properly considered and scheduled. Please inform us ahead of time if you anticipate any delay. Appointments may be cancelled if the patient does not arrive within 30 minutes of the scheduled time without prior notice.',
             '',
             'Location:',
             CLINIC_LOCATION,
